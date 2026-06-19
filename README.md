@@ -64,20 +64,25 @@ each run (a `Snapshot` block) to `storage/logs/<uuid>.log`, rotated to the last
 `--log-size` iteration blocks.
 
 ```
-sonitor.py routine create <period> [--alias NAME] [--log-size N] --metric <name> [args...]...
-sonitor.py routine list
-sonitor.py routine run        <uuid|alias>
-sonitor.py routine reset      <uuid|alias>
-sonitor.py routine reschedule <uuid|alias> <period> [--scheduler cron|inproc]
-sonitor.py routine enable  <uuid|alias> [--scheduler cron|inproc]
-sonitor.py routine disable <uuid|alias> [--scheduler cron|inproc]
+sonitor.py routine create <period> [--name NAME] [--annotation TEXT] [--log-size N] --metric <name> [args...]...
+sonitor.py routine list [--scheduler cron|inproc]
+sonitor.py routine run        <uuid|name>
+sonitor.py routine reset      <uuid|name>
+sonitor.py routine reschedule <uuid|name> <period> [--scheduler cron|inproc]
+sonitor.py routine enable  <uuid|name> [--scheduler cron|inproc]
+sonitor.py routine disable <uuid|name> [--scheduler cron|inproc]
+sonitor.py routine delete  <uuid|name> [--scheduler cron|inproc]
+sonitor.py routine purge   <uuid|name> [--scheduler cron|inproc]
 ```
 
 `<period>` is an integer with a `s|m|h|d` suffix (`30s`, `5m`, `12h`, `1d`).
+`--name` is a friendly handle that must be **unique** across routines (creation
+fails if it already exists); `--annotation` stores a free-text note in the
+`.sonitor` file. A routine can always be referenced by its uuid as well.
 
 ```bash
-# Create a routine and reference it by alias
-python3 sonitor.py routine create 5m --alias smoke --metric sys-storage --metric net-ping 8.8.8.8
+# Create a routine and reference it by name
+python3 sonitor.py routine create 5m --name smoke --annotation "nightly disk check" --metric sys-storage --metric net-ping 8.8.8.8
 python3 sonitor.py routine run smoke              # run once, append to its log
 python3 sonitor.py routine list
 
@@ -87,6 +92,10 @@ python3 sonitor.py routine disable smoke
 
 # Change the period (re-applies the cron schedule if the routine is enabled)
 python3 sonitor.py routine reschedule smoke 1m
+
+# Remove a routine (both unschedule it first to avoid a dangling cron entry)
+python3 sonitor.py routine delete smoke           # remove the .sonitor file, keep the log
+python3 sonitor.py routine purge smoke            # remove the .sonitor file and the log
 ```
 
 ### Scheduling
@@ -98,6 +107,11 @@ runs `sonitor.py routine run <uuid>`, and removes both on `disable`. Cron's
 granularity is one minute, so sub-minute periods are rejected by the cron
 scheduler. The **inproc** scheduler is stubbed behind the same interface for a
 future in-process loop.
+
+`routine list` reports each routine's `STATE` as `enabled`/`disabled` by querying
+the scheduler (the crontab, for cron) — the schedule itself is the source of
+truth, so the column reflects whether the routine is actually scheduled rather
+than a value stored in the `.sonitor` file.
 
 ## Snapshot format
 

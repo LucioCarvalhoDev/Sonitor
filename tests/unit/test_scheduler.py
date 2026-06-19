@@ -62,7 +62,7 @@ def test_cron_enable_disable_round_trip(fake_crontab):
 
 
 def test_reschedule_updates_period_without_scheduling(fake_crontab):
-    routine = store.create("30s", [{"name": "sys-uptime"}], alias="short")
+    routine = store.create("30s", [{"name": "sys-uptime"}], name="short")
 
     assert cli.run_routine_reschedule("short", "1m", "cron") == 0
 
@@ -71,7 +71,7 @@ def test_reschedule_updates_period_without_scheduling(fake_crontab):
 
 
 def test_reschedule_reapplies_schedule_when_enabled(fake_crontab):
-    routine = store.create("1m", [{"name": "sys-uptime"}], alias="short")
+    routine = store.create("1m", [{"name": "sys-uptime"}], name="short")
     CronScheduler().enable(routine)
 
     assert cli.run_routine_reschedule("short", "5m", "cron") == 0
@@ -82,7 +82,7 @@ def test_reschedule_reapplies_schedule_when_enabled(fake_crontab):
 
 
 def test_reschedule_invalid_period_raises(fake_crontab):
-    store.create("1m", [{"name": "sys-uptime"}], alias="short")
+    store.create("1m", [{"name": "sys-uptime"}], name="short")
 
     with pytest.raises(ValueError):
         cli.run_routine_reschedule("short", "5x", "cron")

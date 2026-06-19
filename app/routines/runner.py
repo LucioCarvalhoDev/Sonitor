@@ -41,9 +41,6 @@ def build_metrics(routine: Routine) -> List[Metric]:
 
 def run_once(routine: Routine) -> Path:
     """Run every metric of the routine once, append a Snapshot block, rotate, persist."""
-    routine.state = "running"
-    store.save(routine)
-
     metrics = build_metrics(routine)
     results: List[MetricResult] = [ShellExecutor.collect(metric) for metric in metrics]
 
@@ -56,7 +53,6 @@ def run_once(routine: Routine) -> Path:
         blocks = blocks[-routine.log_max_lines:]
     path.write_text("\n\n".join(blocks) + "\n")
 
-    routine.state = "idle"
     routine.last_run_at = datetime.now(timezone.utc)
     store.save(routine)
     return path

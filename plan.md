@@ -104,12 +104,12 @@ python3 sonitor.py print --metric net-foobar; echo "exit=$?"   # friendly error,
 [sonitor]
 version       = "0.1"
 spawn_command = "routine create 12h --metric sys-storage --metric sys-uptime"
-alias         = ""
+name          = ""          # unique across routines
+annotation    = ""          # free-text note
 
 [routine]
 created_at  = 2026-05-18T00:00:00Z
 last_run_at = 2026-05-18T00:00:00Z
-state       = "idle"          # idle | running
 period      = "12h"
 
 [[routine.metrics]]
@@ -128,7 +128,7 @@ max_lines = 1000
 - `app/routines/model.py` — `Routine` dataclass + TOML load/dump (`tomli` /
   `tomli-w`). Period parser (`30s`, `5m`, `12h`, `1d`).
 - `app/routines/store.py` — list / read / write under `ROUTINES_DIR`; resolve by
-  `uuid` or `alias`.
+  `uuid` or unique `name` (enforced on create; ambiguity guarded on read).
 - `app/routines/runner.py` — run a routine once: build metrics via
   `CollectorRepository`, execute via `ShellExecutor`, render a `Snapshot`, append
   to `storage/logs/<uuid>.log`, and rotate to the last `max_lines` iteration
@@ -137,10 +137,10 @@ max_lines = 1000
 ### B3. CLI `routine` subcommands
 
 ```
-sonitor routine create <period> [--alias NAME] [--log-size N] --metric ...
+sonitor routine create <period> [--name NAME] [--annotation TEXT] [--log-size N] --metric ...
 sonitor routine list
-sonitor routine run    <uuid|alias>
-sonitor routine reset  <uuid|alias>
+sonitor routine run    <uuid|name>
+sonitor routine reset  <uuid|name>
 ```
 
 ### B4. Scheduler interface (shipped)
@@ -162,14 +162,14 @@ sonitor routine reset  <uuid|alias>
 ### Phase B verification (manual)
 
 ```bash
-python3 sonitor.py routine create 5m --alias smoke --metric sys-storage --metric net-ping 8.8.8.8
-python3 sonitor.py routine list                 # shows alias=smoke, period=5m
+python3 sonitor.py routine create 5m --name smoke --metric sys-storage --metric net-ping 8.8.8.8
+python3 sonitor.py routine list                 # shows name=smoke, period=5m
 python3 sonitor.py routine run smoke            # writes storage/logs/<uuid>.log
 python3 sonitor.py routine run smoke            # second iteration appended
 python3 sonitor.py routine reset smoke          # log cleared
 
 # Rotation: --log-size 3, run 5x, expect only the last 3 iteration blocks
-python3 sonitor.py routine create 1m --alias rot --log-size 3 --metric sys-storage
+python3 sonitor.py routine create 1m --name rot --log-size 3 --metric sys-storage
 for i in 1 2 3 4 5; do python3 sonitor.py routine run rot; done
 grep -c '^--- ' storage/logs/*rot*.log          # expect 3
 ```

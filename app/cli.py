@@ -56,15 +56,18 @@ def _metric_specs_to_dicts(metric_specs: List[List[str]]) -> List[Dict]:
 def run_routine_create(
     period: str,
     metric_specs: List[List[str]],
-    alias: str | None,
+    name: str | None,
+    annotation: str | None,
     log_size: int | None,
 ) -> int:
     parse_period(period)  # validate early with a friendly error
     metrics = _metric_specs_to_dicts(metric_specs)
 
     parts = ["routine", "create", period]
-    if alias:
-        parts += ["--alias", alias]
+    if name:
+        parts += ["--name", name]
+    if annotation:
+        parts += ["--annotation", annotation]
     if log_size:
         parts += ["--log-size", str(log_size)]
     for spec in metric_specs:
@@ -73,26 +76,30 @@ def run_routine_create(
     routine = store.create(
         period=period,
         metrics=metrics,
-        alias=alias or "",
+        name=name or "",
+        annotation=annotation or "",
         log_size=log_size,
         spawn_command=" ".join(parts),
     )
-    print(f"created routine {routine.uuid}" + (f" (alias {routine.alias})" if routine.alias else ""))
+    print(f"created routine {routine.uuid}" + (f" (name {routine.name})" if routine.name else ""))
     return 0
 
 
-def run_routine_list() -> int:
+def run_routine_list(scheduler_name: str | None = None) -> int:
     routines = store.list_routines()
     if not routines:
         print("no routines")
         return 0
 
-    print(f"{'UUID':<32}  {'ALIAS':<12}  {'PERIOD':<7}  {'STATE':<8}  LAST_RUN")
+    enabled = set(get_scheduler(scheduler_name).list_enabled())
+
+    print(f"{'UUID':<32}  {'NAME':<12}  {'PERIOD':<7}  {'STATE':<8}  LAST_RUN")
     for routine in routines:
         last_run = routine.last_run_at.strftime("%Y-%m-%d %H:%M:%SZ")
+        state = "enabled" if routine.uuid in enabled else "disabled"
         print(
-            f"{routine.uuid:<32}  {routine.alias or '-':<12}  "
-            f"{routine.period:<7}  {routine.state:<8}  {last_run}"
+            f"{routine.uuid:<32}  {routine.name or '-':<12}  "
+            f"{routine.period:<7}  {state:<8}  {last_run}"
         )
     return 0
 
@@ -143,6 +150,23 @@ def run_routine_reset(target: str) -> int:
     return 0
 
 
+def run_routine_delete(target: str, scheduler_name: str | None) -> int:
+    routine = store.resolve(target)
+    get_scheduler(scheduler_name).disable(routine)  # drop any dangling schedule
+    store.delete(routine)
+    print(f"deleted routine {routine.uuid}")
+    return 0
+
+
+def run_routine_purge(target: str, scheduler_name: str | None) -> int:
+    routine = store.resolve(target)
+    get_scheduler(scheduler_name).disable(routine)  # drop any dangling schedule
+    runner.log_path(routine).unlink(missing_ok=True)  # clear: remove the log
+    store.delete(routine)  # delete: remove the .sonitor
+    print(f"purged routine {routine.uuid} (log and .sonitor removed)")
+    return 0
+
+
 def run_routine_enable(target: str, scheduler_name: str | None) -> int:
     routine = store.resolve(target)
     scheduler = get_scheduler(scheduler_name)
@@ -167,7 +191,16 @@ def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
 
     create = actions.add_parser("create", help="Create a routine.")
     create.add_argument("period", help="Recurrence period, e.g. 30s, 5m, 12h, 1d.")
-    create.add_argument("--alias", metavar="NAME", help="Friendly name to reference the routine.")
+    create.add_argument(
+        "--name",
+        metavar="NAME",
+        help="Unique name to reference the routine (must not already exist).",
+    )
+    create.add_argument(
+        "--annotation",
+        metavar="TEXT",
+        help="Free-text note stored in the .sonitor file.",
+    )
     create.add_argument(
         "--log-size",
         type=int,
@@ -184,7 +217,12 @@ def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Metric name followed by its arguments. Repeatable.",
     )
 
-    actions.add_parser("list", help="List stored routines.")
+    list_action = actions.add_parser("list", help="List stored routines.")
+    list_action.add_argument(
+        "--scheduler",
+        metavar="NAME",
+        help="Scheduler to query for enabled state (defaults to DEFAULT_SCHEDULER).",
+    )
 
     for verb, helptext in (
         ("show", "Print a routine's .sonitor file and its log."),
@@ -192,12 +230,12 @@ def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
         ("reset", "Clear a routine's log."),
     ):
         action = actions.add_parser(verb, help=helptext)
-        action.add_argument("target", metavar="UUID|ALIAS", help="Routine uuid or alias.")
+        action.add_argument("target", metavar="UUID|NAME", help="Routine uuid or name.")
 
     reschedule = actions.add_parser(
         "reschedule", help="Change a routine's period (re-applies the schedule if enabled)."
     )
-    reschedule.add_argument("target", metavar="UUID|ALIAS", help="Routine uuid or alias.")
+    reschedule.add_argument("target", metavar="UUID|NAME", help="Routine uuid or name.")
     reschedule.add_argument("period", help="New recurrence period, e.g. 30s, 5m, 12h, 1d.")
     reschedule.add_argument(
         "--scheduler",
@@ -208,9 +246,11 @@ def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
     for verb, helptext in (
         ("enable", "Schedule a routine for recurring execution."),
         ("disable", "Unschedule a routine."),
+        ("delete", "Unschedule and remove a routine's .sonitor file (keeps its log)."),
+        ("purge", "Unschedule and remove a routine's .sonitor file and its log."),
     ):
         action = actions.add_parser(verb, help=helptext)
-        action.add_argument("target", metavar="UUID|ALIAS", help="Routine uuid or alias.")
+        action.add_argument("target", metavar="UUID|NAME", help="Routine uuid or name.")
         action.add_argument(
             "--scheduler",
             metavar="NAME",
@@ -250,9 +290,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _dispatch_routine(args: argparse.Namespace) -> int:
     if args.action == "create":
-        return run_routine_create(args.period, args.metrics, args.alias, args.log_size)
+        return run_routine_create(
+            args.period, args.metrics, args.name, args.annotation, args.log_size
+        )
     if args.action == "list":
-        return run_routine_list()
+        return run_routine_list(args.scheduler)
     if args.action == "show":
         return run_routine_show(args.target)
     if args.action == "reschedule":
@@ -265,6 +307,10 @@ def _dispatch_routine(args: argparse.Namespace) -> int:
         return run_routine_enable(args.target, args.scheduler)
     if args.action == "disable":
         return run_routine_disable(args.target, args.scheduler)
+    if args.action == "delete":
+        return run_routine_delete(args.target, args.scheduler)
+    if args.action == "purge":
+        return run_routine_purge(args.target, args.scheduler)
     raise ValueError(f"unknown routine action: {args.action}")
 
 

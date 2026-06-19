@@ -43,9 +43,9 @@ class Routine:
     uuid: str
     period: str
     metrics: List[Dict] = field(default_factory=list)
-    alias: str = ""
+    name: str = ""
+    annotation: str = ""
     spawn_command: str = ""
-    state: str = "idle"          # idle | running
     version: str = FILE_VERSION
     log_max_lines: int = DEFAULT_LOG_MAX_LINES
     created_at: datetime = field(default_factory=_now)
@@ -60,12 +60,12 @@ class Routine:
             "sonitor": {
                 "version": self.version,
                 "spawn_command": self.spawn_command,
-                "alias": self.alias,
+                "name": self.name,
+                "annotation": self.annotation,
             },
             "routine": {
                 "created_at": self.created_at,
                 "last_run_at": self.last_run_at,
-                "state": self.state,
                 "period": self.period,
                 "metrics": self.metrics,
             },
@@ -85,9 +85,9 @@ class Routine:
             uuid=uuid,
             period=routine.get("period", ""),
             metrics=routine.get("metrics", []),
-            alias=sonitor.get("alias", ""),
+            name=sonitor.get("name", ""),
+            annotation=sonitor.get("annotation", ""),
             spawn_command=sonitor.get("spawn_command", ""),
-            state=routine.get("state", "idle"),
             version=sonitor.get("version", FILE_VERSION),
             log_max_lines=log.get("max_lines", DEFAULT_LOG_MAX_LINES),
             created_at=routine.get("created_at", _now()),

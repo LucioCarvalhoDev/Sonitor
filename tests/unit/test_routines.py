@@ -25,7 +25,8 @@ def test_routine_toml_round_trip():
         uuid="deadbeef",
         period="12h",
         metrics=[{"name": "sys-storage"}, {"name": "net-ping", "args": ["8.8.8.8", "1.1.1.1"]}],
-        alias="smoke",
+        name="smoke",
+        annotation="nightly smoke check",
         spawn_command="routine create 12h --metric sys-storage",
         log_max_lines=500,
         created_at=when,
@@ -36,8 +37,8 @@ def test_routine_toml_round_trip():
     assert restored == routine
 
 
-def test_create_and_resolve_by_uuid_and_alias():
-    routine = store.create("5m", [{"name": "sys-storage"}], alias="smoke")
+def test_create_and_resolve_by_uuid_and_name():
+    routine = store.create("5m", [{"name": "sys-storage"}], name="smoke")
     assert store.resolve(routine.uuid).uuid == routine.uuid
     assert store.resolve("smoke").uuid == routine.uuid
 
@@ -47,8 +48,19 @@ def test_resolve_unknown_raises():
         store.resolve("does-not-exist")
 
 
+def test_create_rejects_duplicate_name():
+    store.create("5m", [{"name": "sys-storage"}], name="dup")
+    with pytest.raises(ValueError):
+        store.create("1h", [{"name": "sys-uptime"}], name="dup")
+
+
+def test_annotation_round_trips_through_store():
+    routine = store.create("5m", [{"name": "sys-storage"}], name="noted", annotation="watch disk")
+    assert store.resolve("noted").annotation == "watch disk"
+
+
 def test_log_rotation_keeps_last_n_blocks():
-    routine = store.create("1m", [{"name": "sys-storage"}], alias="rot", log_size=3)
+    routine = store.create("1m", [{"name": "sys-storage"}], name="rot", log_size=3)
     for _ in range(5):
         path = runner.run_once(routine)
 
