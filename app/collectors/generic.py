@@ -1,5 +1,5 @@
-from datetime import timedelta
-from typing import Dict
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List
 
 class Metric():
     name: str = "_"
@@ -20,20 +20,20 @@ class Metric():
 class MetricResult():
     def __init__(
             self, name: str, command: str, response: str,
-            started_at=float,
-            finished_at=float) -> None:
+            started_at: float = 0.0,
+            finished_at: float = 0.0) -> None:
         self.name = name
         self.command = command
         self.response = response
         self.started_at: float = started_at
         self.finished_at: float = finished_at
-    
+
     def get_delta(self):
         return timedelta(seconds=(self.finished_at - self.started_at))
-    
+
     def _as_prompt(self, command: str, response: str) -> str:
-        return f"$ {command}\n{response}"
-    
+        return f"sonitor$ {command}\n{response}"
+
     def as_prompt(self) -> str:
         return self._as_prompt(self.command, self.response)
 
@@ -53,5 +53,24 @@ class Collector():
         for fullname, metric in cls.metrics.items():
             if request == fullname:
                 return metric
-        
+
         raise ValueError(f"[Collector {cls.base_name}]: Given '{request}' does not resolve to a valid metric.")
+
+
+class Snapshot():
+    """The set of all metric results for one iteration, serializable as text."""
+
+    def __init__(self, results: List[MetricResult], iteration: int = 1) -> None:
+        self.results = results
+        self.iteration = iteration
+
+    @staticmethod
+    def _header(iteration: int) -> str:
+        now = datetime.now(timezone.utc)
+        ts = now.timestamp()
+        human = now.strftime("%Y-%m-%d %H:%M:%S UTC")
+        return f"--- {ts} - {human} - Iteration {iteration} ---"
+
+    def as_text(self) -> str:
+        body = "\n\n".join(result.as_prompt() for result in self.results)
+        return f"{self._header(self.iteration)}\n\n{body}"

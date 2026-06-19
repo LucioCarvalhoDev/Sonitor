@@ -5,12 +5,9 @@ from app.collectors.generic import Collector
 class UptimeMetric(Metric):
     name = "uptime"
 
-    def __init__(self) -> None:
-        pass
-
     def _mount_shell_command(self) -> str:
         return f"uptime"
-    
+
     def mount_shell_command(self) -> str:
         return self._mount_shell_command()
 
@@ -27,10 +24,10 @@ class TopMetric(Metric):
     name = "top"
 
     def mount_shell_command(self) -> str:
-        return self.mount_shell_command()
+        return self._mount_shell_command()
 
     def _mount_shell_command(self):
-        return f"top"
+        return f"top -bn1"
 
 
 METRICS: list[type[Metric]] = [UptimeMetric, StorageMetric, TopMetric]

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Convenience wrapper so you can run `./sonitor ...` instead of
+# `python3 sonitor.py ...`. Resolves its own directory, so it works from
+# anywhere (including the cron entries created by `routine enable`).
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${SONITOR_PYTHON:-python3}"
+
+exec "$PYTHON" "$HERE/sonitor.py" "$@"

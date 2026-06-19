@@ -14,8 +14,11 @@ class PingMetric(Metric):
 class DnsMetric(Metric):
     name = "dns"
 
-    def _mount_shell_command(self, arguments: str) -> str:
-        return f"nslookup {arguments}"
+    def _mount_shell_command(self, address: str) -> str:
+        return f"nslookup {address}"
+
+    def mount_shell_command(self) -> str:
+        return self._mount_shell_command(self.arguments[0])
 
 class PublicIPMetric(Metric):
     name = "public-ip"

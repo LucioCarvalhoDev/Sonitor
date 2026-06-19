@@ -1,0 +1,69 @@
+from datetime import datetime, timezone
+
+import pytest
+
+from app.routines import runner, store
+from app.routines.model import Routine, parse_period
+
+
+def test_parse_period_valid():
+    assert parse_period("30s") == 30
+    assert parse_period("5m") == 300
+    assert parse_period("12h") == 12 * 3600
+    assert parse_period("1d") == 86400
+
+
+@pytest.mark.parametrize("bad", ["", "5", "5x", "m5", "-1m", "0s", "abc"])
+def test_parse_period_invalid(bad):
+    with pytest.raises(ValueError):
+        parse_period(bad)
+
+
+def test_routine_toml_round_trip():
+    when = datetime(2026, 5, 18, 12, 0, 0, tzinfo=timezone.utc)
+    routine = Routine(
+        uuid="deadbeef",
+        period="12h",
+        metrics=[{"name": "sys-storage"}, {"name": "net-ping", "args": ["8.8.8.8", "1.1.1.1"]}],
+        alias="smoke",
+        spawn_command="routine create 12h --metric sys-storage",
+        log_max_lines=500,
+        created_at=when,
+        last_run_at=when,
+    )
+
+    restored = Routine.from_toml(routine.to_toml(), uuid="deadbeef")
+    assert restored == routine
+
+
+def test_create_and_resolve_by_uuid_and_alias():
+    routine = store.create("5m", [{"name": "sys-storage"}], alias="smoke")
+    assert store.resolve(routine.uuid).uuid == routine.uuid
+    assert store.resolve("smoke").uuid == routine.uuid
+
+
+def test_resolve_unknown_raises():
+    with pytest.raises(ValueError):
+        store.resolve("does-not-exist")
+
+
+def test_log_rotation_keeps_last_n_blocks():
+    routine = store.create("1m", [{"name": "sys-storage"}], alias="rot", log_size=3)
+    for _ in range(5):
+        path = runner.run_once(routine)
+
+    content = path.read_text()
+    headers = [line for line in content.splitlines() if line.startswith("--- ")]
+    assert len(headers) == 3
+    # Newest preserved: iterations should be the last three (3, 4, 5).
+    assert "Iteration 5" in content
+    assert "Iteration 1" not in content
+
+
+def test_reset_clears_log():
+    routine = store.create("1m", [{"name": "sys-storage"}])
+    path = runner.run_once(routine)
+    assert path.read_text().strip() != ""
+
+    runner.reset(routine)
+    assert path.read_text() == ""

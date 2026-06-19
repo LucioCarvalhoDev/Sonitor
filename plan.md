@@ -1,58 +1,109 @@
-# Sonitor v0.1 — Specs & Implementation Plan
+# Sonitor — Specs & Implementation Plan
 
 ## Context
 
-Sonitor is a fresh project: only `app/collectors/net.py` has any code (and it has
-bugs — `datetime.utc(...)`, `MetricResult.new(...)`, missing `return`).
-The README sketched an ambitious CLI (print + routine lifecycle + scheduling +
-sys/net/VoIP metrics) but contained ~10 internal contradictions around folder
-layout, CLI shape, file format, and metric naming. This document locks the v0.1
-design, identifies what needs to change, and stages the work. VoIP metrics and
-auto-scheduling are deferred to v0.2.
+Sonitor collects and logs server metrics from Linux systems and networks. The
+project started from an ambitious README sketch (print + routine lifecycle +
+scheduling + sys/net/VoIP metrics) that had internal contradictions around folder
+layout, CLI shape, file format, and metric naming.
+
+During implementation the code converged on an abstraction that **differs from the
+original sketch** and is the one we keep going forward:
+
+- `Metric` / `Collector` / `CollectorRepository` (in `app/collectors/`)
+- a separate `ShellExecutor` (in `app/execution/`)
+- a `Snapshot` formatter
+
+This document records the locked decisions, what already shipped (Phase A), and
+what remains (Phase B). VoIP / Asterisk metrics and auto-scheduling are deferred to
+v0.2.
 
 ## Decisions
 
-| Topic              | Choice                                              |
-| ------------------ | --------------------------------------------------- |
-| CLI metric syntax  | Repeated `--metric` flag                            |
-| Routine file       | TOML body, `.sonitor` extension                     |
-| Scheduler          | `Scheduler` interface — cron impl + in-process impl |
-| v0.1 scope         | `print` + routine lifecycle (no enable/disable yet) |
-| VoIP / Asterisk    | Deferred to v0.2                                    |
+| Topic              | Choice                                                        |
+| ------------------ | ------------------------------------------------------------ |
+| Architecture       | Keep `Collector` / `CollectorRepository` / `ShellExecutor`   |
+| CLI metric syntax  | Repeated `--metric` flag (`append` + `nargs='+'`)            |
+| Routine file       | TOML body, `.sonitor` extension                              |
+| TOML on Python 3.10| `tomli` (read) + `tomli-w` (write) — no stdlib `tomllib`     |
+| Scheduler          | `Scheduler` interface — cron impl shipped; in-process stubbed|
+| Delivery           | Incremental — `print` first (Phase A), routines next (Phase B)|
+| VoIP / Asterisk    | Deferred to v0.2                                             |
 
-### Defaults (not explicitly discussed)
+### Conventions
 
-- **Folder layout:** keep existing `app/collectors/`, `app/scheduler/` (drop the
-  `schedullers` typo and `app/monitor/` from the original README).
-- **Canonical metric names:** `sys-df`, `sys-top`, `sys-iostat`, `net-ping`,
-  `net-tracert`. Drop the drift (`net-traceroute`, `io-df`, `asterisk-channels`).
-- **Snapshot text format:** `--- {ts} - {human} - Iteration N ---` followed by
-  `sonitor$ <cmd>\n<stdout>` blocks (matches original README log example).
-- **Log rotation:** line-based, default 1000 lines, newest preserved.
-- **Storage paths:** `storage/routines/<uuid>.sonitor`, `storage/logs/<uuid>.log`.
-  No `local/` directory in v0.1 (status/locks land with `enable/disable` in v0.2).
-- **Python deps:** stdlib only. If staying on 3.10 (current `.venv`), add `tomli`
-  + `tomli-w`. If bumping to 3.11+, use stdlib `tomllib` (read) + a writer.
+- **Metric names** (implemented): `sys-storage`, `sys-uptime`, `sys-top`,
+  `net-ping`, `net-dns`, `net-public-ip`.
+- **Snapshot text format:** `--- {utc-ts} - {utc-human} - Iteration N ---`
+  followed by `sonitor$ <cmd>\n<stdout>` blocks.
+- **Storage paths:** `storage/routines/<uuid>.sonitor`, `storage/logs/<uuid>.log`
+  (base dir from `STORAGE_FOLDER`, default `./storage`).
+- **Packages:** explicit `__init__.py` in every package (no namespace-package
+  reliance).
 
-## v0.1 CLI surface
+## Module layout (current)
 
 ```
-sonitor print   --metric <name> [args...] [--metric <name> [args...]]... [--output PATH]
-sonitor routine create <period> [--alias NAME] [--log-size N] --metric ...
-sonitor routine list
-sonitor routine run    <uuid|alias>
-sonitor routine reset  <uuid|alias>
+sonitor.py                 # thin entrypoint -> app.cli.main()
+app/
+  cli.py                   # argparse wiring; `print` subcommand
+  settings.py              # .env parsing + STORAGE_DIR/ROUTINES_DIR/LOGS_DIR
+  collectors/
+    __init__.py            # CollectorRepository (full name -> Metric class)
+    generic.py             # Metric, MetricResult, Collector, Snapshot
+    net.py                 # PingMetric, DnsMetric, PublicIPMetric, NetCollector
+    sys.py                 # UptimeMetric, StorageMetric, TopMetric, SystemCollector
+  execution/
+    shell_executor.py      # ShellExecutor
+  scheduler/               # (v0.2) base + cron + inproc
+  enums/
+    env_variables.py       # EnvVariable enum
+tests/
+  unit/                    # (Phase B)
+storage/
+  routines/<uuid>.sonitor  # (Phase B)
+  logs/<uuid>.log          # (Phase B)
 ```
 
-Deferred to v0.2: `routine enable`, `routine disable`, VoIP metrics, lock files,
-status ini.
+## Phase A — `print` end-to-end ✅ (shipped)
 
-## Routine file format (TOML, `.sonitor` extension)
+Implemented and verified end-to-end:
+
+- Added the missing `__init__.py` across `app/` and `tests/` packages.
+- Fixed collector bugs: `TopMetric` self-recursion + `top -bn1`,
+  `UptimeMetric.__init__` signature, `DnsMetric` argument handling,
+  `MetricResult` default-argument annotations, `ShellExecutor` type hints.
+- Added `Snapshot` (header + `sonitor$` blocks) reused by `print` and, later,
+  routines.
+- New `app/cli.py`: `argparse` with the `print` subcommand
+  (`--metric` as `append` + `nargs='+'`, plus `--output`), friendly error +
+  non-zero exit on unknown metrics.
+- `sonitor.py` reduced to a thin entrypoint.
+- Filled `app/settings.py` (`.env` parser, storage paths) and
+  `app/enums/env_variables.py`.
+
+### Phase A verification (manual)
+
+```bash
+python3 sonitor.py print --metric sys-storage
+python3 sonitor.py print --metric sys-uptime --metric sys-top --metric net-ping 8.8.8.8
+python3 sonitor.py print --metric sys-storage --metric net-dns google.com --output /tmp/snap.txt
+test -s /tmp/snap.txt && echo OK
+python3 sonitor.py print --metric net-foobar; echo "exit=$?"   # friendly error, exit 1
+```
+
+## Phase B — routines + scheduler (next)
+
+### B0. Dependencies
+
+- Add `requirements.txt` with `tomli` and `tomli-w` (Python 3.10).
+
+### B1. Routine file format (`storage/routines/<uuid>.sonitor`, TOML)
 
 ```toml
 [sonitor]
 version       = "0.1"
-spawn_command = "routine create 12h --metric sys-df --metric sys-uptime"
+spawn_command = "routine create 12h --metric sys-storage --metric sys-uptime"
 alias         = ""
 
 [routine]
@@ -62,7 +113,7 @@ state       = "idle"          # idle | running
 period      = "12h"
 
 [[routine.metrics]]
-name = "sys-df"
+name = "sys-storage"
 
 [[routine.metrics]]
 name = "net-ping"
@@ -72,104 +123,61 @@ args = ["8.8.8.8", "1.1.1.1"]
 max_lines = 1000
 ```
 
-## Module layout
+### B2. New modules
+
+- `app/routines/model.py` — `Routine` dataclass + TOML load/dump (`tomli` /
+  `tomli-w`). Period parser (`30s`, `5m`, `12h`, `1d`).
+- `app/routines/store.py` — list / read / write under `ROUTINES_DIR`; resolve by
+  `uuid` or `alias`.
+- `app/routines/runner.py` — run a routine once: build metrics via
+  `CollectorRepository`, execute via `ShellExecutor`, render a `Snapshot`, append
+  to `storage/logs/<uuid>.log`, and rotate to the last `max_lines` iteration
+  blocks (newest preserved).
+
+### B3. CLI `routine` subcommands
 
 ```
-sonitor.py                    # thin entrypoint -> app.cli.main()
-app/
-  __init__.py
-  cli.py                      # argparse wiring; subcommand dispatch
-  settings.py                 # paths + env loading
-  collectors/
-    __init__.py               # registry: name -> Metric class
-    base.py                   # Metric, MetricResult, Snapshot
-    net.py                    # PingMetric, TracertMetric
-    sys.py                    # DfMetric, TopMetric, IostatMetric
-  routines/
-    __init__.py
-    model.py                  # Routine dataclass + TOML load/dump
-    store.py                  # list / read / write under storage/routines/
-    runner.py                 # run a routine once; append + rotate log
-  scheduler/
-    __init__.py
-    base.py                   # Scheduler protocol
-    cron.py                   # CronScheduler (stub for v0.2)
-    inproc.py                 # InProcessScheduler (stub for v0.2)
-  enums/
-    env_variables.py          # renamed from env-variables.py (hyphen breaks import)
+sonitor routine create <period> [--alias NAME] [--log-size N] --metric ...
+sonitor routine list
+sonitor routine run    <uuid|alias>
+sonitor routine reset  <uuid|alias>
 ```
 
-## Critical files
+### B4. Scheduler interface (shipped)
 
-- `sonitor.py` — entrypoint (currently empty).
-- `app/cli.py` — **new**. `argparse` with subparsers; `--metric` is `action='append'`
-  with `nargs='+'` so `--metric net-ping 8.8.8.8 1.1.1.1` lands as one list per flag.
-- `app/collectors/base.py` — **new**. Move `Metric`, `MetricResult`, `Snapshot`
-  out of `net.py`. Fix:
-  - `datetime.now(timezone.utc)` (current code: `datetime.utc(...)`)
-  - `MetricResult(...)` (current code: `MetricResult.new(...)`)
-  - missing `return` in `Metric.collect`
-  - `Snapshot.started_at = datetime.now(...).timestamp()` — current code assigns
-    the bound method, not its call
-- `app/collectors/net.py` — **rewrite**: `PingMetric` + new `TracertMetric`,
-  importing from `base`.
-- `app/collectors/sys.py` — **new**: `DfMetric`, `TopMetric`, `IostatMetric`.
-- `app/collectors/__init__.py` — **new**: name → class registry consumed by both
-  CLI and routine runner.
-- `app/routines/{model,store,runner}.py` — **new**, see layout.
-- `app/scheduler/{base,cron,inproc}.py` — **new**, interface + stubs that raise
-  `NotImplementedError`. Real impls land in v0.2.
-- `app/settings.py` — **fill in**: `STORAGE_DIR`, `ROUTINES_DIR`, `LOGS_DIR`, and
-  a small `parse_env_file` (no `python-dotenv` dependency).
-- `app/enums/env-variables.py` — **rename** to `env_variables.py`.
-- `README.md` — rewrite the inconsistent sections to match the above.
+- `app/scheduler/base.py` — `Scheduler` ABC (`enable`/`disable`/`is_enabled`/
+  `list_enabled`).
+- `app/scheduler/cron.py` — `CronScheduler`: `period_to_cron` + manages the user's
+  crontab (`# sonitor:<uuid>` marker + entry running `routine run <uuid>`).
+  Sub-minute periods are rejected.
+- `app/scheduler/inproc.py` — `InprocScheduler` stub (`NotImplementedError`).
+- `app/scheduler/__init__.py` — `get_scheduler(name)` factory selecting by
+  `DEFAULT_SCHEDULER`.
+- CLI `routine enable`/`disable [--scheduler ...]` wired through `get_scheduler`.
 
-## Implementation order
+### B5. Tests
 
-1. Fix module names + drop `__init__.py` into every package so imports work.
-2. `collectors/base.py` (with bug fixes) + `collectors/__init__.py` registry.
-3. `collectors/sys.py` and rewritten `collectors/net.py` — start with `sys-df`
-   and `net-ping` to validate the abstraction end-to-end.
-4. `app/cli.py` with just `print`; verify end-to-end.
-5. `routines/model.py` + `store.py` (TOML round-trip).
-6. `routines/runner.py` (run one routine, append + rotate log).
-7. CLI `routine` subcommands: `create`, `list`, `run`, `reset`.
-8. `scheduler/` interface + stubs.
-9. Rewrite README to match shipped reality.
+- `tests/unit/` with `pytest`: `--metric` parsing, TOML round-trip, log rotation.
 
-## Verification
-
-Manual end-to-end (no test framework in v0.1 — small surface; `pytest` lands in
-v0.2 with the scheduler impls):
+### Phase B verification (manual)
 
 ```bash
-# Single-shot collection
-python3 sonitor.py print --metric sys-df
-python3 sonitor.py print --metric net-ping 8.8.8.8 1.1.1.1
-python3 sonitor.py print --metric sys-df --metric net-ping 8.8.8.8 --output /tmp/snap.txt
-test -s /tmp/snap.txt
+python3 sonitor.py routine create 5m --alias smoke --metric sys-storage --metric net-ping 8.8.8.8
+python3 sonitor.py routine list                 # shows alias=smoke, period=5m
+python3 sonitor.py routine run smoke            # writes storage/logs/<uuid>.log
+python3 sonitor.py routine run smoke            # second iteration appended
+python3 sonitor.py routine reset smoke          # log cleared
 
-# Routine lifecycle
-python3 sonitor.py routine create 5m --alias smoke --metric sys-df --metric net-ping 8.8.8.8
-python3 sonitor.py routine list                         # shows alias=smoke, period=5m
-python3 sonitor.py routine run smoke                    # writes to storage/logs/<uuid>.log
-python3 sonitor.py routine run smoke                    # second iteration appended
-python3 sonitor.py routine reset smoke                  # log truncated
-
-# Rotation: create with --log-size 3, run 5x, expect only last 3 iteration blocks
-python3 sonitor.py routine create 1m --alias rot --log-size 3 --metric sys-df
+# Rotation: --log-size 3, run 5x, expect only the last 3 iteration blocks
+python3 sonitor.py routine create 1m --alias rot --log-size 3 --metric sys-storage
 for i in 1 2 3 4 5; do python3 sonitor.py routine run rot; done
-grep -c '^--- ' storage/logs/*rot*.log   # expect 3
+grep -c '^--- ' storage/logs/*rot*.log          # expect 3
 ```
 
-Spot-check the `.sonitor` file by hand to confirm TOML round-trip stays
-human-editable.
+## Out of scope (next)
 
-## Out of scope (v0.2+)
-
-- `routine enable` / `disable` and the actual `Scheduler` implementations.
+- In-process `Scheduler` implementation (sub-minute periods).
 - `local/status.ini` and `local/locks/<uuid>.lock` for concurrent-run guarding.
-- VoIP metrics (`voip-channelstats`, `voip-endpoints`) — need an Asterisk host
-  to validate.
-- `pytest` suite.
+- VoIP metrics (`voip-channelstats`, `voip-endpoints`) — need an Asterisk host.
 - Structured JSON output mode.
+```

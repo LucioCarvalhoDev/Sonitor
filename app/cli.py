@@ -1,0 +1,261 @@
+import argparse
+import sys
+from pathlib import Path
+from typing import Dict, List
+
+from app.collectors import CollectorRepository, Metric, MetricResult, Snapshot
+from app.execution.shell_executor import ShellExecutor
+from app.routines import runner, store
+from app.routines.model import parse_period
+from app.scheduler import get_scheduler
+
+
+def build_metrics(metric_specs: List[List[str]]) -> List[Metric]:
+    """Turn ``--metric`` specs into resolved Metric instances.
+
+    Each spec is ``[name, arg1, arg2, ...]`` as produced by argparse's
+    ``append`` + ``nargs='+'``. Resolution errors (unknown metric) raise
+    ``ValueError`` from the repository.
+    """
+    metrics: List[Metric] = []
+    for spec in metric_specs:
+        name = spec[0]
+        arguments = spec[1:]
+        metric_cls = CollectorRepository.resolve(name)
+        metrics.append(metric_cls(arguments))
+    return metrics
+
+
+def run_print(metric_specs: List[List[str]], output: str | None) -> int:
+    metrics = build_metrics(metric_specs)
+
+    results: List[MetricResult] = [ShellExecutor.collect(metric) for metric in metrics]
+    snapshot = Snapshot(results)
+    text = snapshot.as_text()
+
+    if output:
+        Path(output).write_text(text + "\n")
+    else:
+        print(text)
+
+    return 0
+
+
+def _metric_specs_to_dicts(metric_specs: List[List[str]]) -> List[Dict]:
+    """Validate metric specs against the repository and shape them for storage."""
+    metric_dicts: List[Dict] = []
+    for spec in metric_specs:
+        CollectorRepository.resolve(spec[0])  # raises ValueError on unknown metric
+        entry: Dict = {"name": spec[0]}
+        if len(spec) > 1:
+            entry["args"] = spec[1:]
+        metric_dicts.append(entry)
+    return metric_dicts
+
+
+def run_routine_create(
+    period: str,
+    metric_specs: List[List[str]],
+    alias: str | None,
+    log_size: int | None,
+) -> int:
+    parse_period(period)  # validate early with a friendly error
+    metrics = _metric_specs_to_dicts(metric_specs)
+
+    parts = ["routine", "create", period]
+    if alias:
+        parts += ["--alias", alias]
+    if log_size:
+        parts += ["--log-size", str(log_size)]
+    for spec in metric_specs:
+        parts += ["--metric", *spec]
+
+    routine = store.create(
+        period=period,
+        metrics=metrics,
+        alias=alias or "",
+        log_size=log_size,
+        spawn_command=" ".join(parts),
+    )
+    print(f"created routine {routine.uuid}" + (f" (alias {routine.alias})" if routine.alias else ""))
+    return 0
+
+
+def run_routine_list() -> int:
+    routines = store.list_routines()
+    if not routines:
+        print("no routines")
+        return 0
+
+    print(f"{'UUID':<32}  {'ALIAS':<12}  {'PERIOD':<7}  {'STATE':<8}  LAST_RUN")
+    for routine in routines:
+        last_run = routine.last_run_at.strftime("%Y-%m-%d %H:%M:%SZ")
+        print(
+            f"{routine.uuid:<32}  {routine.alias or '-':<12}  "
+            f"{routine.period:<7}  {routine.state:<8}  {last_run}"
+        )
+    return 0
+
+
+def run_routine_show(target: str) -> int:
+    routine = store.resolve(target)
+    routine_path = store.path_for(routine.uuid)
+    log = runner.log_path(routine)
+
+    print(f"# {routine_path}")
+    print(routine_path.read_text().rstrip())
+    print()
+    print(f"# {log}")
+    log_text = log.read_text().rstrip() if log.exists() else ""
+    print(log_text if log_text else "(no log yet)")
+    return 0
+
+
+def run_routine_run(target: str) -> int:
+    routine = store.resolve(target)
+    path = runner.run_once(routine)
+    print(f"ran routine {routine.uuid} -> {path}")
+    return 0
+
+
+def run_routine_reset(target: str) -> int:
+    routine = store.resolve(target)
+    runner.reset(routine)
+    print(f"reset log for routine {routine.uuid}")
+    return 0
+
+
+def run_routine_enable(target: str, scheduler_name: str | None) -> int:
+    routine = store.resolve(target)
+    scheduler = get_scheduler(scheduler_name)
+    scheduler.enable(routine)
+    print(f"enabled routine {routine.uuid} via {scheduler.name} scheduler")
+    return 0
+
+
+def run_routine_disable(target: str, scheduler_name: str | None) -> int:
+    routine = store.resolve(target)
+    scheduler = get_scheduler(scheduler_name)
+    scheduler.disable(routine)
+    print(f"disabled routine {routine.uuid} via {scheduler.name} scheduler")
+    return 0
+
+
+def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
+    routine_parser = subparsers.add_parser(
+        "routine", help="Create, run and schedule recurring metric routines."
+    )
+    actions = routine_parser.add_subparsers(dest="action", required=True)
+
+    create = actions.add_parser("create", help="Create a routine.")
+    create.add_argument("period", help="Recurrence period, e.g. 30s, 5m, 12h, 1d.")
+    create.add_argument("--alias", metavar="NAME", help="Friendly name to reference the routine.")
+    create.add_argument(
+        "--log-size",
+        type=int,
+        metavar="N",
+        help="Keep only the last N iteration blocks in the log.",
+    )
+    create.add_argument(
+        "--metric",
+        action="append",
+        nargs="+",
+        required=True,
+        metavar=("NAME", "ARG"),
+        dest="metrics",
+        help="Metric name followed by its arguments. Repeatable.",
+    )
+
+    actions.add_parser("list", help="List stored routines.")
+
+    for verb, helptext in (
+        ("show", "Print a routine's .sonitor file and its log."),
+        ("run", "Run a routine once now."),
+        ("reset", "Clear a routine's log."),
+    ):
+        action = actions.add_parser(verb, help=helptext)
+        action.add_argument("target", metavar="UUID|ALIAS", help="Routine uuid or alias.")
+
+    for verb, helptext in (
+        ("enable", "Schedule a routine for recurring execution."),
+        ("disable", "Unschedule a routine."),
+    ):
+        action = actions.add_parser(verb, help=helptext)
+        action.add_argument("target", metavar="UUID|ALIAS", help="Routine uuid or alias.")
+        action.add_argument(
+            "--scheduler",
+            metavar="NAME",
+            help="Scheduler to use (defaults to DEFAULT_SCHEDULER).",
+        )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="sonitor",
+        description="Collect and log server metrics from Linux systems and networks.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    print_parser = subparsers.add_parser(
+        "print", help="Single-shot snapshot to stdout or a file."
+    )
+    print_parser.add_argument(
+        "--metric",
+        action="append",
+        nargs="+",
+        required=True,
+        metavar=("NAME", "ARG"),
+        dest="metrics",
+        help="Metric name followed by its arguments. Repeatable.",
+    )
+    print_parser.add_argument(
+        "--output",
+        metavar="PATH",
+        help="Write the snapshot to a file instead of stdout.",
+    )
+
+    _add_routine_parser(subparsers)
+
+    return parser
+
+
+def _dispatch_routine(args: argparse.Namespace) -> int:
+    if args.action == "create":
+        return run_routine_create(args.period, args.metrics, args.alias, args.log_size)
+    if args.action == "list":
+        return run_routine_list()
+    if args.action == "show":
+        return run_routine_show(args.target)
+    if args.action == "run":
+        return run_routine_run(args.target)
+    if args.action == "reset":
+        return run_routine_reset(args.target)
+    if args.action == "enable":
+        return run_routine_enable(args.target, args.scheduler)
+    if args.action == "disable":
+        return run_routine_disable(args.target, args.scheduler)
+    raise ValueError(f"unknown routine action: {args.action}")
+
+
+def main(argv: List[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        if args.command == "print":
+            return run_print(args.metrics, args.output)
+        if args.command == "routine":
+            return _dispatch_routine(args)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    except NotImplementedError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+    parser.error(f"unknown command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

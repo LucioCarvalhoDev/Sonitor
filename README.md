@@ -1,176 +1,196 @@
 # Sonitor
 
 Sonitor is a lightweight CLI tool for collecting and logging server metrics from
-Linux systems, networks, and (in v0.2) Asterisk PBX instances.
+Linux systems and networks. VoIP / Asterisk PBX metrics are planned for v0.2.
 
-It has two modes:
+It is designed around two modes:
 
-- **`print`** — single-shot snapshot to stdout or a file.
-- **`routine`** — persist a named set of metrics with a period; run it on demand
-  now, enable/disable scheduled execution in v0.2.
+- **`print`** — single-shot snapshot to stdout or a file. **(implemented)**
+- **`routine`** — persist a named set of metrics with a period, run on demand, and
+  schedule recurring execution through a pluggable `Scheduler` (cron). **(implemented)**
+
+> **Status:** both `print` and the full `routine` lifecycle
+> (`create/list/run/reset/enable/disable`) work end-to-end. The cron scheduler is
+> the first `Scheduler` implementation; an in-process scheduler is stubbed behind
+> the same interface.
 
 ## Usage
 
 ```
-sonitor.py print   --metric <name> [args...] [--metric <name> [args...]]... [--output PATH]
-sonitor.py routine create <period> [--alias NAME] [--log-size N] --metric ...
-sonitor.py routine list
-sonitor.py routine run    <uuid|alias>
-sonitor.py routine reset  <uuid|alias>
+sonitor.py print --metric <name> [args...] [--metric <name> [args...]]... [--output PATH]
 ```
 
-Metrics are always declared with the `--metric` flag, followed by the metric
-name and any positional arguments that metric accepts. The flag may be repeated.
+Metrics are declared with the `--metric` flag, followed by the metric name and any
+arguments that metric accepts. The flag may be repeated to combine metrics in a
+single snapshot.
 
-### Subcommands
+### `print`
 
-- `print` — single execution; emits the snapshot to stdout.
-  - `--metric <name> [args...]` — repeat for each metric.
-  - `--output <path>` — write to a file instead of stdout.
-- `routine create <period> --metric ...` — create a `.sonitor` file.
-  - `<period>` — e.g. `30s`, `5m`, `12h`, `1d`.
-  - `--alias <str>` — human-readable handle (otherwise refer by uuid).
-  - `--log-size <N>` — keep the routine's log under N iteration blocks
-    (newest preserved). Default `1000`.
-- `routine list` — list routines with their alias, period, and state.
-- `routine run <uuid|alias>` — run one iteration now.
-- `routine reset <uuid|alias>` — clear the log file for a routine.
+- `--metric <name> [args...]` — repeat for each metric.
+- `--output <path>` — write the snapshot to a file instead of stdout.
 
-### Available metrics (v0.1)
+### Available metrics
 
-- `sys-df` — `df -h`
-- `sys-top` — `top -bn1`
-- `sys-iostat <interval>` — `iostat <interval> 2`
-- `net-ping <address>+` — `ping -c 4 <address>`
-- `net-tracert <address>+` — `traceroute <address>`
-
-Deferred to v0.2: `voip-channelstats`, `voip-endpoints <pattern?>`, and the
-`routine enable` / `disable` scheduling commands.
+| Name             | Command run        | Arguments        |
+| ---------------- | ------------------ | ---------------- |
+| `sys-storage`    | `df`               | —                |
+| `sys-uptime`     | `uptime`           | —                |
+| `sys-top`        | `top -bn1`         | —                |
+| `net-ping`       | `ping <addr> -c 4` | `<address>`      |
+| `net-dns`        | `nslookup <addr>`  | `<address>`      |
+| `net-public-ip`  | `curl -4 -s ifconfig.me` | —          |
 
 ## Examples
 
 ```bash
-# Print a single metric to stdout
-python3 sonitor.py print --metric net-tracert 8.8.8.8
+# Single metric to stdout
+python3 sonitor.py print --metric sys-storage
 
-# Combine metrics
-python3 sonitor.py print --metric sys-df --metric net-ping 1.1.1.1
+# Network metric with an argument
+python3 sonitor.py print --metric net-ping 8.8.8.8
 
-# Send the snapshot to a file
-python3 sonitor.py print --output ./file.txt --metric net-ping 8.8.8.8 domain.site.com
+# Combine several metrics in one snapshot
+python3 sonitor.py print --metric sys-uptime --metric sys-top --metric net-ping 8.8.8.8
 
-# Persist a routine and run it once
-python3 sonitor.py routine create 5m --alias edge --metric sys-top
-python3 sonitor.py routine run edge
-
-# Multi-metric routine
-python3 sonitor.py routine create 5m \
-  --metric net-ping 8.8.8.8 domain.site.net \
-  --metric net-tracert 212.78.32.113
+# Write the snapshot to a file
+python3 sonitor.py print --metric sys-storage --metric net-dns google.com --output ./snap.txt
 ```
+
+## `routine`
+
+A routine is a named, persisted set of metrics with a recurrence period. It is
+stored as a TOML `.sonitor` file under `storage/routines/<uuid>.sonitor` and logs
+each run (a `Snapshot` block) to `storage/logs/<uuid>.log`, rotated to the last
+`--log-size` iteration blocks.
+
+```
+sonitor.py routine create <period> [--alias NAME] [--log-size N] --metric <name> [args...]...
+sonitor.py routine list
+sonitor.py routine run     <uuid|alias>
+sonitor.py routine reset   <uuid|alias>
+sonitor.py routine enable  <uuid|alias> [--scheduler cron|inproc]
+sonitor.py routine disable <uuid|alias> [--scheduler cron|inproc]
+```
+
+`<period>` is an integer with a `s|m|h|d` suffix (`30s`, `5m`, `12h`, `1d`).
+
+```bash
+# Create a routine and reference it by alias
+python3 sonitor.py routine create 5m --alias smoke --metric sys-storage --metric net-ping 8.8.8.8
+python3 sonitor.py routine run smoke              # run once, append to its log
+python3 sonitor.py routine list
+
+# Schedule / unschedule recurring execution (cron installs into your crontab)
+python3 sonitor.py routine enable smoke
+python3 sonitor.py routine disable smoke
+```
+
+### Scheduling
+
+`enable`/`disable` delegate to a `Scheduler` selected by `--scheduler` or, by
+default, the `DEFAULT_SCHEDULER` setting. The **cron** scheduler manages your
+crontab automatically: it adds a `# sonitor:<uuid>` marker plus a cron entry that
+runs `sonitor.py routine run <uuid>`, and removes both on `disable`. Cron's
+granularity is one minute, so sub-minute periods are rejected by the cron
+scheduler. The **inproc** scheduler is stubbed behind the same interface for a
+future in-process loop.
+
+## Snapshot format
+
+A snapshot is the set of all metric results for one iteration, rendered as text:
+
+```
+--- {utc-timestamp} - {utc-human-readable} - Iteration {n} ---
+
+sonitor$ uptime
+ 07:25:02 up 4 days, 22:14,  5 users,  load average: 0.07, 0.17, 0.18
+
+sonitor$ df
+Filesystem      1K-blocks      Used Available Use% Mounted on
+/dev/sdd       1055762868   5929784 996129612   1% /
+...
+```
+
+## Architecture
+
+The implemented design is built around collectors, a registry, and a shell
+executor:
+
+- **`Metric`** — knows how to build a shell command from its arguments.
+- **`Collector`** — groups related metrics under a prefix (`sys`, `net`) and
+  exposes them by full name (e.g. `sys-storage`).
+- **`CollectorRepository`** — resolves a metric full name (`net-ping`) to its
+  `Metric` class.
+- **`ShellExecutor`** — runs a metric's command, times it, and returns a
+  `MetricResult`.
+- **`Snapshot`** — aggregates `MetricResult`s into the text block shown above.
+
+When you run `python3 sonitor.py print --metric net-ping 8.8.8.8`, the CLI
+(`app/cli.py`) resolves each `--metric` through `CollectorRepository`, executes it
+via `ShellExecutor`, and renders the results as a `Snapshot` to stdout or a file.
 
 ## Folder structure
 
 ```
-.env
-.env.sample
-sonitor.py
+sonitor.py                 # thin entrypoint -> app.cli.main()
+.env / .env.sample
 plan.md
 app/
-  __init__.py
-  cli.py
-  settings.py
+  cli.py                   # argparse wiring; `print` subcommand
+  settings.py              # .env parsing + storage paths
   collectors/
-    __init__.py        # name -> Metric registry
-    base.py            # Metric, MetricResult, Snapshot
-    net.py             # PingMetric, TracertMetric
-    sys.py             # DfMetric, TopMetric, IostatMetric
+    __init__.py            # registry: CollectorRepository (name -> Metric)
+    generic.py             # Metric, MetricResult, Collector, Snapshot
+    net.py                 # PingMetric, DnsMetric, PublicIPMetric, NetCollector
+    sys.py                 # UptimeMetric, StorageMetric, TopMetric, SystemCollector
+  execution/
+    shell_executor.py      # ShellExecutor
   routines/
-    model.py           # Routine dataclass + TOML I/O
-    store.py           # CRUD under storage/routines/
-    runner.py          # run a routine + rotate its log
+    model.py               # Routine dataclass, period parser, TOML (de)serialize
+    store.py               # create/list/save/resolve under ROUTINES_DIR
+    runner.py              # run a routine once: collect, snapshot, append, rotate
   scheduler/
-    base.py            # Scheduler protocol
-    cron.py            # CronScheduler (v0.2)
-    inproc.py          # InProcessScheduler (v0.2)
+    base.py                # Scheduler interface (ABC)
+    cron.py                # CronScheduler (manages the user's crontab)
+    inproc.py              # InprocScheduler (stub)
+    __init__.py            # get_scheduler() factory + registry
   enums/
-    env_variables.py
+    env_variables.py       # EnvVariable enum
+tests/
+  unit/                    # pytest: parsing, TOML round-trip, rotation, scheduler
 storage/
   routines/<uuid>.sonitor
   logs/<uuid>.log
 ```
 
-## Architecture
+## Configuration
 
-When the user runs `python3 sonitor.py routine create 1m --metric sys-df`, the
-CLI writes a `<uuid>.sonitor` file under `storage/routines/` containing the
-spawn command, the routine's metadata, and its metric list (see format below).
-`routine run <uuid|alias>` loads that file, executes each metric, formats the
-output as a snapshot, and appends it to `storage/logs/<uuid>.log`, trimming the
-log to the last `max_lines` iteration blocks.
+`app/settings.py` reads an optional `.env` (no external dependency). See
+`.env.sample`:
 
-In v0.2, `routine enable` will register the routine with a configured
-`Scheduler` (cron entry on the host, or the in-process scheduler for dev/test);
-`routine disable` removes it.
-
-### Routine file (`storage/routines/<uuid>.sonitor`, TOML)
-
-```toml
-[sonitor]
-version       = "0.1"
-spawn_command = "routine create 12h --metric sys-uptime --metric sys-df"
-alias         = ""
-
-[routine]
-created_at  = 2026-05-18T00:00:00Z
-last_run_at = 2026-05-18T00:00:00Z
-state       = "idle"           # idle | running
-period      = "12h"
-
-[[routine.metrics]]
-name = "sys-uptime"
-
-[[routine.metrics]]
-name = "sys-df"
-
-[log]
-max_lines = 1000
-```
-
-### Log file (`storage/logs/<uuid>.log`)
-
-```
---- {utc-timestamp} - {utc-human-readable} - Iteration {step} ---
-
-sonitor$ uptime
-09:20:12 up 29 min,  2 users,  load average: 0.01, 0.40, 0.20
-
-sonitor$ df
-Filesystem      1K-blocks      Used Available Use% Mounted on
-/dev/sdd       1055762868   5547328 996512068   1% /
-...
-
---- {utc-timestamp} - {utc-human-readable} - Iteration {step} ---
-
-sonitor$ uptime
-...
-```
+- `STORAGE_FOLDER` — base directory for routine files and logs (default
+  `./storage`).
+- `DEFAULT_SCHEDULER` — scheduler used by `routine enable`/`disable` when
+  `--scheduler` is omitted (`cron` | `inproc`, default `cron`).
 
 ## Glossary
 
-- **Snapshot** — the set of all metric results for one iteration; serializable
-  as the text block shown above.
-- **Routine** — an in-memory object backed by a `.sonitor` file under
-  `storage/routines/` that defines which metrics to capture, on what period,
-  and how large its log may grow.
-- **Iteration** — one execution of a routine producing one snapshot.
+- **Snapshot** — the set of all metric results for one iteration, serializable as
+  the text block shown above.
+- **Routine** — a persisted set of metrics captured on a period, backed by a
+  `.sonitor` file under `storage/routines/` and logged to `storage/logs/`.
+- **Iteration** — one execution producing one snapshot.
+- **Scheduler** — interface (`app/scheduler/base.py`) that hooks a routine into a
+  recurring mechanism; `CronScheduler` is the first implementation.
 
 ## Roadmap
 
-- **v0.1** — `print`, routine lifecycle (`create`/`list`/`run`/`reset`),
-  sys + net metrics.
-- **v0.2** — `routine enable`/`disable` with the `Scheduler` interface
-  (cron + in-process impls), VoIP metrics, lock files / status under `local/`,
-  `pytest` suite.
+- **v0.1** — `print` with sys + net metrics. ✅ shipped.
+- **v0.2** — `routine create/list/run/reset` (TOML `.sonitor` files + rotated
+  logs) and `routine enable`/`disable` via a `Scheduler` interface (cron impl;
+  in-process stubbed), with a `pytest` suite. ✅ shipped.
+- **Next** — in-process scheduler implementation, VoIP / Asterisk metrics,
+  structured JSON output.
 
 See `plan.md` for the implementation breakdown.
+```

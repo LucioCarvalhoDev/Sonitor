@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 class ShellExecutor():
 
     @classmethod
-    def collect(cls, metric: type[Metric]) -> MetricResult:
+    def collect(cls, metric: Metric) -> MetricResult:
         command = cls.shell_command(metric)
         started_at: int = datetime.now(timezone.utc).timestamp()
         response = cls._parse_shell_result_to_text(cls.execute_shell_command(command))
@@ -21,7 +21,7 @@ class ShellExecutor():
         return metric_result
 
     @staticmethod
-    def shell_command(metric: type[Metric]) -> str:
+    def shell_command(metric: Metric) -> str:
         return metric.mount_shell_command()
 
     @staticmethod
@@ -36,7 +36,7 @@ class ShellExecutor():
         return result
     
     @classmethod
-    def run_metric(cls, metric: type[Metric]) -> str:
+    def run_metric(cls, metric: Metric) -> str:
         return cls._parse_shell_result_to_text(cls.execute_shell_command(cls.shell_command(metric)))
 
 

@@ -1,4 +1,4 @@
-from app.collectors.generic import Metric, MetricResult, Collector
+from app.collectors.generic import Metric, MetricResult, Collector, Snapshot
 from app.collectors.net import PingMetric, DnsMetric, PublicIPMetric, NetCollector
 from app.collectors.sys import SystemCollector, StorageMetric, UptimeMetric, TopMetric
 import re
@@ -12,6 +12,8 @@ COLLECTORS = [
 __all__ = [
     "Metric",
     "MetricResult",
+    "Snapshot",
+    "CollectorRepository",
     "PingMetric",
     "DnsMetric",
     "PublicIPMetric",
