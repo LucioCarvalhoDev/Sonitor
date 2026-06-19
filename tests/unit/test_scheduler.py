@@ -1,5 +1,7 @@
 import pytest
 
+from app import cli
+from app.routines import store
 from app.routines.model import Routine
 from app.scheduler import CronScheduler, InprocScheduler, get_scheduler
 from app.scheduler.cron import period_to_cron
@@ -57,6 +59,33 @@ def test_cron_enable_disable_round_trip(fake_crontab):
     scheduler.disable(routine)
     assert not scheduler.is_enabled(routine)
     assert fake_crontab["lines"] == []
+
+
+def test_reschedule_updates_period_without_scheduling(fake_crontab):
+    routine = store.create("30s", [{"name": "sys-uptime"}], alias="short")
+
+    assert cli.run_routine_reschedule("short", "1m", "cron") == 0
+
+    assert store.resolve("short").period == "1m"
+    assert fake_crontab["lines"] == []  # was never enabled
+
+
+def test_reschedule_reapplies_schedule_when_enabled(fake_crontab):
+    routine = store.create("1m", [{"name": "sys-uptime"}], alias="short")
+    CronScheduler().enable(routine)
+
+    assert cli.run_routine_reschedule("short", "5m", "cron") == 0
+
+    assert store.resolve("short").period == "5m"
+    assert any("*/5 * * * *" in line for line in fake_crontab["lines"])
+    assert not any("*/1 * * * *" in line for line in fake_crontab["lines"])
+
+
+def test_reschedule_invalid_period_raises(fake_crontab):
+    store.create("1m", [{"name": "sys-uptime"}], alias="short")
+
+    with pytest.raises(ValueError):
+        cli.run_routine_reschedule("short", "5x", "cron")
 
 
 def test_cron_enable_preserves_foreign_lines_and_replaces_dupes(fake_crontab):

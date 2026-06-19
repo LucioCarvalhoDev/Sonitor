@@ -66,8 +66,9 @@ each run (a `Snapshot` block) to `storage/logs/<uuid>.log`, rotated to the last
 ```
 sonitor.py routine create <period> [--alias NAME] [--log-size N] --metric <name> [args...]...
 sonitor.py routine list
-sonitor.py routine run     <uuid|alias>
-sonitor.py routine reset   <uuid|alias>
+sonitor.py routine run        <uuid|alias>
+sonitor.py routine reset      <uuid|alias>
+sonitor.py routine reschedule <uuid|alias> <period> [--scheduler cron|inproc]
 sonitor.py routine enable  <uuid|alias> [--scheduler cron|inproc]
 sonitor.py routine disable <uuid|alias> [--scheduler cron|inproc]
 ```
@@ -83,6 +84,9 @@ python3 sonitor.py routine list
 # Schedule / unschedule recurring execution (cron installs into your crontab)
 python3 sonitor.py routine enable smoke
 python3 sonitor.py routine disable smoke
+
+# Change the period (re-applies the cron schedule if the routine is enabled)
+python3 sonitor.py routine reschedule smoke 1m
 ```
 
 ### Scheduling

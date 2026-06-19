@@ -111,6 +111,24 @@ def run_routine_show(target: str) -> int:
     return 0
 
 
+def run_routine_reschedule(target: str, period: str, scheduler_name: str | None) -> int:
+    parse_period(period)  # validate early with a friendly error
+    routine = store.resolve(target)
+    old_period = routine.period
+    routine.period = period
+    store.save(routine)
+
+    message = f"rescheduled routine {routine.uuid} from {old_period} to {period}"
+
+    scheduler = get_scheduler(scheduler_name)
+    if scheduler.is_enabled(routine):
+        scheduler.enable(routine)  # re-apply so the schedule reflects the new period
+        message += f"; reapplied {scheduler.name} schedule"
+
+    print(message)
+    return 0
+
+
 def run_routine_run(target: str) -> int:
     routine = store.resolve(target)
     path = runner.run_once(routine)
@@ -176,6 +194,17 @@ def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
         action = actions.add_parser(verb, help=helptext)
         action.add_argument("target", metavar="UUID|ALIAS", help="Routine uuid or alias.")
 
+    reschedule = actions.add_parser(
+        "reschedule", help="Change a routine's period (re-applies the schedule if enabled)."
+    )
+    reschedule.add_argument("target", metavar="UUID|ALIAS", help="Routine uuid or alias.")
+    reschedule.add_argument("period", help="New recurrence period, e.g. 30s, 5m, 12h, 1d.")
+    reschedule.add_argument(
+        "--scheduler",
+        metavar="NAME",
+        help="Scheduler to use (defaults to DEFAULT_SCHEDULER).",
+    )
+
     for verb, helptext in (
         ("enable", "Schedule a routine for recurring execution."),
         ("disable", "Unschedule a routine."),
@@ -226,6 +255,8 @@ def _dispatch_routine(args: argparse.Namespace) -> int:
         return run_routine_list()
     if args.action == "show":
         return run_routine_show(args.target)
+    if args.action == "reschedule":
+        return run_routine_reschedule(args.target, args.period, args.scheduler)
     if args.action == "run":
         return run_routine_run(args.target)
     if args.action == "reset":
