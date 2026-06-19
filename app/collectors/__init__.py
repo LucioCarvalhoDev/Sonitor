@@ -1,12 +1,20 @@
 from app.collectors.generic import Metric, MetricResult, Collector, Snapshot
 from app.collectors.net import PingMetric, DnsMetric, PublicIPMetric, NetCollector
 from app.collectors.sys import SystemCollector, StorageMetric, UptimeMetric, TopMetric
+from app.collectors.voip import (
+    VoipCollector,
+    ChannelsCountMetric,
+    ChannelsMetric,
+    ChannelStatusMetric,
+    SipMetric,
+)
 import re
 
 
 COLLECTORS = [
     NetCollector,
-    SystemCollector
+    SystemCollector,
+    VoipCollector,
 ]
 
 __all__ = [
@@ -18,7 +26,11 @@ __all__ = [
     "DnsMetric",
     "PublicIPMetric",
     "StorageMetric",
-    "UptimeMetric"
+    "UptimeMetric",
+    "ChannelsCountMetric",
+    "ChannelsMetric",
+    "ChannelStatusMetric",
+    "SipMetric",
 ] + COLLECTORS
 
 
