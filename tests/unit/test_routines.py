@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
+from app import settings
 from app.execution.target import SshTarget
 from app.routines import runner, store
 from app.routines.model import Routine, parse_period
@@ -85,7 +87,7 @@ def test_annotation_round_trips_through_store():
 def test_log_rotation_keeps_last_n_blocks():
     routine = store.create("1m", [{"name": "sys-storage"}], name="rot", log_size=3)
     for _ in range(5):
-        path = runner.run_once(routine)
+        (path,) = runner.run_once(routine)
 
     content = path.read_text()
     headers = [line for line in content.splitlines() if line.startswith("--- ")]
@@ -97,8 +99,45 @@ def test_log_rotation_keeps_last_n_blocks():
 
 def test_reset_clears_log():
     routine = store.create("1m", [{"name": "sys-storage"}])
-    path = runner.run_once(routine)
+    (path,) = runner.run_once(routine)
     assert path.read_text().strip() != ""
 
     runner.reset(routine)
     assert path.read_text() == ""
+
+
+def test_create_writes_explicit_default_log_path():
+    routine = store.create("1m", [{"name": "sys-storage"}])
+    expected = store.default_log_path(routine.uuid)
+    assert routine.log_to == [expected]
+    # The binding is persisted in the .sonitor, not derived at read time.
+    assert store.resolve(routine.uuid).log_to == [expected]
+    assert runner.log_paths(routine) == [Path(expected)]
+
+
+def test_log_to_round_trips_through_toml():
+    routine = Routine(
+        uuid="x",
+        period="5m",
+        metrics=[{"name": "sys-uptime"}],
+        log_to=["/var/log/sonitor/a.log", "/tmp/b.log"],
+    )
+    restored = Routine.from_toml(routine.to_toml(), uuid="x")
+    assert restored.log_to == ["/var/log/sonitor/a.log", "/tmp/b.log"]
+
+
+def test_run_once_writes_every_log_file(tmp_path):
+    a, b = tmp_path / "a.log", tmp_path / "b.log"
+    routine = store.create("1m", [{"name": "sys-storage"}], log_to=[str(a), str(b)])
+
+    paths = runner.run_once(routine)
+
+    assert paths == [a, b]
+    assert "Iteration 001" in a.read_text()
+    assert "Iteration 001" in b.read_text()
+
+
+def test_log_paths_falls_back_for_legacy_routine():
+    routine = Routine(uuid="legacy", period="5m", metrics=[{"name": "sys-uptime"}])
+    assert routine.log_to == []
+    assert runner.log_paths(routine) == [settings.LOGS_DIR / "legacy.log"]

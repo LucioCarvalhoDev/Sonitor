@@ -87,6 +87,7 @@ def run_routine_create(
     target_spec: str | None = None,
     identity: str | None = None,
     ssh_options: List[str] | None = None,
+    log_to: List[str] | None = None,
 ) -> int:
     parse_period(period)  # validate early with a friendly error
     metrics = _metric_specs_to_dicts(metric_specs)
@@ -99,6 +100,8 @@ def run_routine_create(
         parts += ["--annotation", annotation]
     if log_size:
         parts += ["--log-size", str(log_size)]
+    for path in log_to or []:
+        parts += ["--log-to", path]
     if target_spec:
         parts += ["--target", target_spec]
     if identity:
@@ -116,6 +119,7 @@ def run_routine_create(
         log_size=log_size,
         spawn_command=" ".join(parts),
         target=target,
+        log_to=log_to,
     )
     print(f"created routine {routine.uuid}" + (f" (name {routine.name})" if routine.name else ""))
     return 0
@@ -143,14 +147,14 @@ def run_routine_list(scheduler_name: str | None = None) -> int:
 def run_routine_show(target: str) -> int:
     routine = store.resolve(target)
     routine_path = store.path_for(routine.uuid)
-    log = runner.log_path(routine)
 
     print(f"# {routine_path}")
     print(routine_path.read_text().rstrip())
-    print()
-    print(f"# {log}")
-    log_text = log.read_text().rstrip() if log.exists() else ""
-    print(log_text if log_text else "(no log yet)")
+    for log in runner.log_paths(routine):
+        print()
+        print(f"# {log}")
+        log_text = log.read_text().rstrip() if log.exists() else ""
+        print(log_text if log_text else "(no log yet)")
     return 0
 
 
@@ -174,8 +178,8 @@ def run_routine_reschedule(target: str, period: str, scheduler_name: str | None)
 
 def run_routine_run(target: str) -> int:
     routine = store.resolve(target)
-    path = runner.run_once(routine)
-    print(f"ran routine {routine.uuid} -> {path}")
+    paths = runner.run_once(routine)
+    print(f"ran routine {routine.uuid} -> {', '.join(str(path) for path in paths)}")
     return 0
 
 
@@ -197,7 +201,8 @@ def run_routine_delete(target: str, scheduler_name: str | None) -> int:
 def run_routine_purge(target: str, scheduler_name: str | None) -> int:
     routine = store.resolve(target)
     get_scheduler(scheduler_name).disable(routine)  # drop any dangling schedule
-    runner.log_path(routine).unlink(missing_ok=True)  # clear: remove the log
+    for path in runner.log_paths(routine):  # clear: remove the log files
+        path.unlink(missing_ok=True)
     store.delete(routine)  # delete: remove the .sonitor
     print(f"purged routine {routine.uuid} (log and .sonitor removed)")
     return 0
@@ -326,6 +331,14 @@ def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         metavar="N",
         help="Keep only the last N iteration blocks in the log.",
+    )
+    create.add_argument(
+        "--log-to",
+        action="append",
+        dest="log_to",
+        metavar="PATH",
+        help="Full path of a file to write the log to. Repeatable; "
+             "defaults to the storage logs dir when omitted.",
     )
     create.add_argument(
         "--metric",
@@ -519,7 +532,7 @@ def _dispatch_routine(args: argparse.Namespace) -> int:
     if args.action == "create":
         return run_routine_create(
             args.period, args.metrics, args.name, args.annotation, args.log_size,
-            args.target, args.identity, args.ssh_options,
+            args.target, args.identity, args.ssh_options, args.log_to,
         )
     if args.action == "list":
         return run_routine_list(args.scheduler)

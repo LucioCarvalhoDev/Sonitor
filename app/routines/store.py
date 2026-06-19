@@ -31,6 +31,11 @@ def delete(routine: Routine) -> Path:
     return path
 
 
+def default_log_path(routine_uuid: str) -> str:
+    """The historical implicit log path, now written explicitly into new routines."""
+    return str(settings.LOGS_DIR / f"{routine_uuid}.log")
+
+
 def create(
     period: str,
     metrics: List[Dict],
@@ -39,11 +44,13 @@ def create(
     log_size: int | None = None,
     spawn_command: str = "",
     target: SshTarget | None = None,
+    log_to: List[str] | None = None,
 ) -> Routine:
     if name and _find_by_name(name):
         raise ValueError(f"A routine named '{name}' already exists. Names must be unique.")
+    routine_uuid = uuid_lib.uuid4().hex
     routine = Routine(
-        uuid=uuid_lib.uuid4().hex,
+        uuid=routine_uuid,
         period=period,
         metrics=metrics,
         name=name,
@@ -51,6 +58,7 @@ def create(
         spawn_command=spawn_command,
         log_max_lines=log_size or DEFAULT_LOG_MAX_LINES,
         target=target,
+        log_to=log_to or [default_log_path(routine_uuid)],
     )
     save(routine)
     return routine

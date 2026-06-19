@@ -50,6 +50,9 @@ class Routine:
     spawn_command: str = ""
     version: str = FILE_VERSION
     log_max_lines: int = DEFAULT_LOG_MAX_LINES
+    # Full paths of the files this routine writes its log to. Empty means the
+    # runner falls back to the historical implicit path (see runner.log_paths).
+    log_to: List[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=_now)
     last_run_at: datetime = field(default_factory=_now)
     # Optional SSH target: when set, metrics run on that host (agentless).
@@ -75,6 +78,7 @@ class Routine:
             },
             "log": {
                 "max_lines": self.log_max_lines,
+                "log_to": self.log_to,
             },
         }
         if self.target is not None:
@@ -97,6 +101,7 @@ class Routine:
             spawn_command=sonitor.get("spawn_command", ""),
             version=sonitor.get("version", FILE_VERSION),
             log_max_lines=log.get("max_lines", DEFAULT_LOG_MAX_LINES),
+            log_to=list(log.get("log_to", [])),
             created_at=routine.get("created_at", _now()),
             last_run_at=routine.get("last_run_at", _now()),
             target=SshTarget.from_dict(ssh) if ssh else None,
