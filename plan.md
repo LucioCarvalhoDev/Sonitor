@@ -174,10 +174,58 @@ for i in 1 2 3 4 5; do python3 sonitor.py routine run rot; done
 grep -c '^--- ' storage/logs/*rot*.log          # expect 3
 ```
 
+## Phase C — VoIP + agentless ✅ (shipped)
+
+- `app/collectors/voip.py` — `VoipCollector` with `voip-channels-count`
+  (`core show channels count`), `voip-channels` (`pjsip show channels`),
+  `voip-channelstatus` (`pjsip show channelstats`), and `voip-sip` (passes its
+  argument string through to `sngrep`). Registered in `CollectorRepository`.
+- **Agentless collection over SSH** (robustness for hosts on old/legacy Python):
+  - `app/execution/target.py` — `SshTarget` parses `[user@]host[:port]` and wraps
+    a command into `ssh` (defaults `BatchMode=yes`, `ConnectTimeout=10`).
+  - `app/execution/shell_executor.py` — `ShellExecutor` is now instantiable;
+    `RemoteShellExecutor` overrides execution to run over SSH while keeping the
+    snapshot command clean. `get_executor(target)` picks local vs remote.
+  - CLI `--target/--identity/--ssh-option` on `print` and `routine create`; a
+    routine persists its target in the `.sonitor` `[ssh]` table so scheduled runs
+    hit the same host.
+- `scripts/init.sh` — post-clone setup (venv + deps + `.env`).
+
+## Phase D — remote target onboarding ✅ (shipped)
+
+- New `app/remote/` package:
+  - `model.py` — `Target` (a named `SshTarget`) with TOML (de)serialize.
+  - `store.py` — named-target registry under `settings.TARGETS_DIR` (mirrors
+    `routines/store.py`), `validate_name`, and `resolve_spec(value, ...)` that
+    treats `--target` as a registered name or a `[user@]host[:port]` spec.
+  - `provision.py` — `generate_keypair` (controller-side ed25519 named `id_<uuid>`,
+    key stays local; the file name is UUID-based and the target owns the path),
+    `build_remote_script` (POSIX sh: create locked `sonitor` user, install pubkey,
+    perms, SELinux `restorecon`, `asterisk` group, `sngrep` `setcap`), `run_setup`
+    (interactive SSH bootstrap → provision → verify key auth → register; reuses the
+    existing key on re-run, regenerates with `--force`), and `delete_key_files`.
+  - `rename_target(current, new)` — pure registry rewrite under the new name;
+    guards unknown source, duplicate target, and invalid names. Keys are named by
+    UUID, so the key file (and any routine pointing at it) is unaffected.
+  - `build_teardown_script` + `run_teardown(target, bootstrap_user="root", ...)` —
+    the host-side inverse of setup. `target` is a registered name (host/port from
+    the registry, bootstraps as `bootstrap_user@<host>`, plus a best-effort key
+    auth check) or an explicit `[user@]host[:port]` destination (used verbatim, no
+    registry lookup). Interactive privileged SSH runs `userdel -r sonitor` and
+    reverts the `sngrep` `setcap` (skippable with `--no-privileges`). Leaves the
+    local registration and key in place; returns the `Target` for a known name,
+    else `None`.
+  - `run_purge(name, bootstrap_user="root", ...)` — `teardown` + `forget`:
+    delegates to `run_teardown` then drops the local registry entry and key
+    (`--keep-key` preserves the key). Name-based only; raises if unregistered.
+- CLI `remote setup|list|rename|forget|teardown|purge`; `_build_target` now resolves `--target` via
+  `resolve_spec`, so `print` and `routine create` accept a registered name or a
+  raw spec. New `settings.SSH_DIR` / `settings.TARGETS_DIR` (under git-ignored
+  `storage/`).
+
 ## Out of scope (next)
 
 - In-process `Scheduler` implementation (sub-minute periods).
 - `local/status.ini` and `local/locks/<uuid>.lock` for concurrent-run guarding.
-- VoIP metrics (`voip-channelstats`, `voip-endpoints`) — need an Asterisk host.
 - Structured JSON output mode.
 ```

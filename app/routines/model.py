@@ -2,10 +2,12 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import tomli
 import tomli_w
+
+from app.execution.target import SshTarget
 
 FILE_VERSION = "0.1"
 DEFAULT_LOG_MAX_LINES = 1000
@@ -50,6 +52,8 @@ class Routine:
     log_max_lines: int = DEFAULT_LOG_MAX_LINES
     created_at: datetime = field(default_factory=_now)
     last_run_at: datetime = field(default_factory=_now)
+    # Optional SSH target: when set, metrics run on that host (agentless).
+    target: Optional[SshTarget] = None
 
     def period_seconds(self) -> int:
         return parse_period(self.period)
@@ -73,6 +77,8 @@ class Routine:
                 "max_lines": self.log_max_lines,
             },
         }
+        if self.target is not None:
+            document["ssh"] = self.target.to_dict()
         return tomli_w.dumps(document)
 
     @classmethod
@@ -81,6 +87,7 @@ class Routine:
         sonitor = document.get("sonitor", {})
         routine = document.get("routine", {})
         log = document.get("log", {})
+        ssh = document.get("ssh", {})
         return cls(
             uuid=uuid,
             period=routine.get("period", ""),
@@ -92,6 +99,7 @@ class Routine:
             log_max_lines=log.get("max_lines", DEFAULT_LOG_MAX_LINES),
             created_at=routine.get("created_at", _now()),
             last_run_at=routine.get("last_run_at", _now()),
+            target=SshTarget.from_dict(ssh) if ssh else None,
         )
 
     @classmethod

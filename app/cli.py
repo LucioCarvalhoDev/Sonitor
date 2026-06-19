@@ -4,10 +4,30 @@ from pathlib import Path
 from typing import Dict, List
 
 from app.collectors import CollectorRepository, Metric, MetricResult, Snapshot
-from app.execution.shell_executor import ShellExecutor
+from app.execution import get_executor
+from app.execution.target import SshTarget
+from app.remote import provision
+from app.remote import store as remote_store
 from app.routines import runner, store
 from app.routines.model import parse_period
 from app.scheduler import get_scheduler
+
+
+def _build_target(
+    target: str | None,
+    identity: str | None,
+    ssh_options: List[str] | None,
+) -> SshTarget | None:
+    """Build an SshTarget from CLI flags, or None for local execution.
+
+    ``--target`` accepts a registered target name or a ``[user@]host[:port]``
+    spec. ``--identity``/``--ssh-option`` without ``--target`` is a usage error.
+    """
+    if not target:
+        if identity or ssh_options:
+            raise ValueError("--identity/--ssh-option require --target")
+        return None
+    return remote_store.resolve_spec(target, identity, ssh_options)
 
 
 def build_metrics(metric_specs: List[List[str]]) -> List[Metric]:
@@ -26,10 +46,15 @@ def build_metrics(metric_specs: List[List[str]]) -> List[Metric]:
     return metrics
 
 
-def run_print(metric_specs: List[List[str]], output: str | None) -> int:
+def run_print(
+    metric_specs: List[List[str]],
+    output: str | None,
+    target: SshTarget | None = None,
+) -> int:
     metrics = build_metrics(metric_specs)
 
-    results: List[MetricResult] = [ShellExecutor.collect(metric) for metric in metrics]
+    executor = get_executor(target)
+    results: List[MetricResult] = [executor.collect(metric) for metric in metrics]
     snapshot = Snapshot(results)
     text = snapshot.as_text()
 
@@ -59,9 +84,13 @@ def run_routine_create(
     name: str | None,
     annotation: str | None,
     log_size: int | None,
+    target_spec: str | None = None,
+    identity: str | None = None,
+    ssh_options: List[str] | None = None,
 ) -> int:
     parse_period(period)  # validate early with a friendly error
     metrics = _metric_specs_to_dicts(metric_specs)
+    target = _build_target(target_spec, identity, ssh_options)
 
     parts = ["routine", "create", period]
     if name:
@@ -70,6 +99,12 @@ def run_routine_create(
         parts += ["--annotation", annotation]
     if log_size:
         parts += ["--log-size", str(log_size)]
+    if target_spec:
+        parts += ["--target", target_spec]
+    if identity:
+        parts += ["--identity", identity]
+    for option in ssh_options or []:
+        parts += ["--ssh-option", option]
     for spec in metric_specs:
         parts += ["--metric", *spec]
 
@@ -80,6 +115,7 @@ def run_routine_create(
         annotation=annotation or "",
         log_size=log_size,
         spawn_command=" ".join(parts),
+        target=target,
     )
     print(f"created routine {routine.uuid}" + (f" (name {routine.name})" if routine.name else ""))
     return 0
@@ -183,6 +219,90 @@ def run_routine_disable(target: str, scheduler_name: str | None) -> int:
     return 0
 
 
+def run_remote_setup(destination: str, name: str, no_privileges: bool, force: bool) -> int:
+    target = provision.run_setup(destination, name, no_privileges=no_privileges, force=force)
+    print(f"registered target '{name}' -> {target.target.destination}")
+    print(f"  identity: {target.target.identity_file}")
+    print(f"  try: sonitor print --target {name} --metric sys-uptime")
+    return 0
+
+
+def run_remote_list() -> int:
+    targets = remote_store.list_targets()
+    if not targets:
+        print("no targets")
+        return 0
+
+    print(f"{'NAME':<16}  {'DESTINATION':<28}  IDENTITY")
+    for entry in targets:
+        dest = entry.target.destination + (f":{entry.target.port}" if entry.target.port else "")
+        print(f"{entry.name:<16}  {dest:<28}  {entry.target.identity_file or '-'}")
+    return 0
+
+
+def run_remote_forget(name: str, keep_key: bool) -> int:
+    entry = remote_store.resolve(name)  # raises ValueError if unknown
+    remote_store.delete(name)
+    if not keep_key and entry.target.identity_file:
+        provision.delete_key_files(entry.target.identity_file)
+    print(f"forgot target '{name}'" + ("" if keep_key else " and its key"))
+    print(
+        "note: the 'sonitor' user on the remote host was left in place — "
+        "use 'sonitor remote teardown' to remove it on the host too."
+    )
+    return 0
+
+
+def run_remote_teardown(target: str, bootstrap_user: str, no_privileges: bool) -> int:
+    entry = provision.run_teardown(target, bootstrap_user=bootstrap_user, no_privileges=no_privileges)
+    if entry:
+        dest = entry.target.host + (f":{entry.target.port}" if entry.target.port else "")
+        print(f"tore down the '{provision.REMOTE_USER}' user on {dest}")
+        print(
+            f"note: target '{entry.name}' is still registered locally — use 'sonitor remote forget' "
+            "to drop it, or 'sonitor remote purge' to tear down and forget in one step."
+        )
+    else:
+        print(f"tore down the '{provision.REMOTE_USER}' user on {target}")
+    return 0
+
+
+def run_remote_purge(name: str, bootstrap_user: str, no_privileges: bool, keep_key: bool) -> int:
+    provision.run_purge(name, bootstrap_user=bootstrap_user, no_privileges=no_privileges, keep_key=keep_key)
+    tail = "" if keep_key else " and deleted its key"
+    print(f"purged target '{name}': removed the '{provision.REMOTE_USER}' user on its host{tail}")
+    return 0
+
+
+def run_remote_rename(current: str, new: str) -> int:
+    renamed = provision.rename_target(current, new)
+    print(f"renamed target '{current}' -> '{new}'")
+    print(f"  destination: {renamed.target.destination}")
+    print(f"  identity: {renamed.target.identity_file or '-'}")
+    return 0
+
+
+def _add_ssh_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the agentless SSH target flags shared by `print` and `routine create`."""
+    parser.add_argument(
+        "--target",
+        metavar="[USER@]HOST[:PORT]",
+        help="Run the metrics on this host over SSH instead of locally (agentless).",
+    )
+    parser.add_argument(
+        "--identity",
+        metavar="PATH",
+        help="SSH identity (private key) file, passed as ssh -i (requires --target).",
+    )
+    parser.add_argument(
+        "--ssh-option",
+        action="append",
+        metavar="KEY=VALUE",
+        dest="ssh_options",
+        help="Extra ssh -o option, e.g. --ssh-option StrictHostKeyChecking=accept-new. Repeatable.",
+    )
+
+
 def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
     routine_parser = subparsers.add_parser(
         "routine", help="Create, run and schedule recurring metric routines."
@@ -216,6 +336,7 @@ def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
         dest="metrics",
         help="Metric name followed by its arguments. Repeatable.",
     )
+    _add_ssh_arguments(create)
 
     list_action = actions.add_parser("list", help="List stored routines.")
     list_action.add_argument(
@@ -258,6 +379,94 @@ def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
         )
 
 
+def _add_remote_parser(subparsers: argparse._SubParsersAction) -> None:
+    remote_parser = subparsers.add_parser(
+        "remote", help="Set up and manage remote SSH targets for agentless collection."
+    )
+    actions = remote_parser.add_subparsers(dest="action", required=True)
+
+    setup = actions.add_parser(
+        "setup",
+        help="Provision a remote host (create the sonitor user + SSH key) and register it by name.",
+    )
+    setup.add_argument(
+        "destination",
+        metavar="[USER@]HOST[:PORT]",
+        help="Privileged destination used once to provision (ssh asks for the password).",
+    )
+    setup.add_argument("--name", required=True, metavar="NAME", help="Name to register the target under.")
+    setup.add_argument(
+        "--no-privileges",
+        action="store_true",
+        help="Skip wiring metric privileges (asterisk group, sngrep setcap) on the target.",
+    )
+    setup.add_argument(
+        "--force",
+        action="store_true",
+        help="Regenerate the SSH key even if one already exists for this name.",
+    )
+
+    actions.add_parser("list", help="List registered targets.")
+
+    rename = actions.add_parser(
+        "rename", help="Rename a registered target (and its local SSH key files)."
+    )
+    rename.add_argument("current", metavar="CURRENT", help="Existing target name.")
+    rename.add_argument("new", metavar="NEW", help="New target name.")
+
+    forget = actions.add_parser("forget", help="Forget a registered target locally (and delete its key).")
+    forget.add_argument("name", metavar="NAME", help="Registered target name.")
+    forget.add_argument(
+        "--keep-key",
+        action="store_true",
+        help="Keep the local SSH key files instead of deleting them.",
+    )
+
+    teardown = actions.add_parser(
+        "teardown",
+        help="Remove the sonitor user on a target's host, by registered name or explicit destination (keeps the local registration).",
+    )
+    teardown.add_argument(
+        "target",
+        metavar="NAME | [USER@]HOST[:PORT]",
+        help="Registered target name, or an explicit privileged destination to tear down.",
+    )
+    teardown.add_argument(
+        "--bootstrap-user",
+        default="root",
+        metavar="USER",
+        help="Privileged user to connect as when TARGET is a registered name "
+        "(default: root; ssh asks for the password; ignored for an explicit destination).",
+    )
+    teardown.add_argument(
+        "--no-privileges",
+        action="store_true",
+        help="Skip reverting metric privileges (leave the sngrep setcap in place).",
+    )
+
+    purge = actions.add_parser(
+        "purge",
+        help="Tear down a registered target on its host (by name) and forget it locally.",
+    )
+    purge.add_argument("name", metavar="NAME", help="Registered target name.")
+    purge.add_argument(
+        "--bootstrap-user",
+        default="root",
+        metavar="USER",
+        help="Privileged user to connect as for the teardown (default: root; ssh asks for the password).",
+    )
+    purge.add_argument(
+        "--no-privileges",
+        action="store_true",
+        help="Skip reverting metric privileges (leave the sngrep setcap in place).",
+    )
+    purge.add_argument(
+        "--keep-key",
+        action="store_true",
+        help="Keep the local SSH key files instead of deleting them.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sonitor",
@@ -282,16 +491,35 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Write the snapshot to a file instead of stdout.",
     )
+    _add_ssh_arguments(print_parser)
 
     _add_routine_parser(subparsers)
+    _add_remote_parser(subparsers)
 
     return parser
+
+
+def _dispatch_remote(args: argparse.Namespace) -> int:
+    if args.action == "setup":
+        return run_remote_setup(args.destination, args.name, args.no_privileges, args.force)
+    if args.action == "list":
+        return run_remote_list()
+    if args.action == "rename":
+        return run_remote_rename(args.current, args.new)
+    if args.action == "forget":
+        return run_remote_forget(args.name, args.keep_key)
+    if args.action == "teardown":
+        return run_remote_teardown(args.target, args.bootstrap_user, args.no_privileges)
+    if args.action == "purge":
+        return run_remote_purge(args.name, args.bootstrap_user, args.no_privileges, args.keep_key)
+    raise ValueError(f"unknown remote action: {args.action}")
 
 
 def _dispatch_routine(args: argparse.Namespace) -> int:
     if args.action == "create":
         return run_routine_create(
-            args.period, args.metrics, args.name, args.annotation, args.log_size
+            args.period, args.metrics, args.name, args.annotation, args.log_size,
+            args.target, args.identity, args.ssh_options,
         )
     if args.action == "list":
         return run_routine_list(args.scheduler)
@@ -320,9 +548,12 @@ def main(argv: List[str] | None = None) -> int:
 
     try:
         if args.command == "print":
-            return run_print(args.metrics, args.output)
+            target = _build_target(args.target, args.identity, args.ssh_options)
+            return run_print(args.metrics, args.output, target)
         if args.command == "routine":
             return _dispatch_routine(args)
+        if args.command == "remote":
+            return _dispatch_remote(args)
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

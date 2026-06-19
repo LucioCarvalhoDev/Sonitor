@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.execution.target import SshTarget
 from app.routines import runner, store
 from app.routines.model import Routine, parse_period
 
@@ -35,6 +36,28 @@ def test_routine_toml_round_trip():
 
     restored = Routine.from_toml(routine.to_toml(), uuid="deadbeef")
     assert restored == routine
+
+
+def test_routine_toml_round_trip_with_ssh_target():
+    when = datetime(2026, 5, 18, 12, 0, 0, tzinfo=timezone.utc)
+    routine = Routine(
+        uuid="deadbeef",
+        period="12h",
+        metrics=[{"name": "voip-channels-count"}],
+        target=SshTarget.parse("root@10.0.0.5:2222", options=["StrictHostKeyChecking=accept-new"]),
+        created_at=when,
+        last_run_at=when,
+    )
+
+    restored = Routine.from_toml(routine.to_toml(), uuid="deadbeef")
+    assert restored == routine
+    assert restored.target.destination == "root@10.0.0.5"
+
+
+def test_routine_without_target_has_no_ssh_table():
+    routine = Routine(uuid="x", period="5m", metrics=[{"name": "sys-uptime"}])
+    assert "[ssh]" not in routine.to_toml()
+    assert Routine.from_toml(routine.to_toml(), uuid="x").target is None
 
 
 def test_create_and_resolve_by_uuid_and_name():

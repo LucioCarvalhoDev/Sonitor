@@ -5,7 +5,7 @@ from typing import List
 
 from app import settings
 from app.collectors import CollectorRepository, Metric, MetricResult, Snapshot
-from app.execution.shell_executor import ShellExecutor
+from app.execution import get_executor
 from app.routines import store
 from app.routines.model import Routine
 
@@ -42,7 +42,8 @@ def build_metrics(routine: Routine) -> List[Metric]:
 def run_once(routine: Routine) -> Path:
     """Run every metric of the routine once, append a Snapshot block, rotate, persist."""
     metrics = build_metrics(routine)
-    results: List[MetricResult] = [ShellExecutor.collect(metric) for metric in metrics]
+    executor = get_executor(routine.target)
+    results: List[MetricResult] = [executor.collect(metric) for metric in metrics]
 
     path = log_path(routine)
     blocks = _read_blocks(path)

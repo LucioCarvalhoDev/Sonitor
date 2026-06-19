@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from app import settings
+from app.execution.target import SshTarget
 from app.routines.model import DEFAULT_LOG_MAX_LINES, Routine
 
 ROUTINE_SUFFIX = ".sonitor"
@@ -37,6 +38,7 @@ def create(
     annotation: str = "",
     log_size: int | None = None,
     spawn_command: str = "",
+    target: SshTarget | None = None,
 ) -> Routine:
     if name and _find_by_name(name):
         raise ValueError(f"A routine named '{name}' already exists. Names must be unique.")
@@ -48,6 +50,7 @@ def create(
         annotation=annotation,
         spawn_command=spawn_command,
         log_max_lines=log_size or DEFAULT_LOG_MAX_LINES,
+        target=target,
     )
     save(routine)
     return routine

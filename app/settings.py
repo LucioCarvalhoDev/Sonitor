@@ -38,5 +38,7 @@ def _get(name: EnvVariable, default: str) -> str:
 STORAGE_DIR = (BASE_DIR / _get(EnvVariable.STORAGE_FOLDER, "./storage")).resolve()
 ROUTINES_DIR = STORAGE_DIR / "routines"
 LOGS_DIR = STORAGE_DIR / "logs"
+TARGETS_DIR = STORAGE_DIR / "targets"
+SSH_DIR = STORAGE_DIR / "ssh"
 
 DEFAULT_SCHEDULER = _get(EnvVariable.DEFAULT_SCHEDULER, "cron")

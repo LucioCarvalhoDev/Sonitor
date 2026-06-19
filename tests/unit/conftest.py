@@ -9,4 +9,6 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "STORAGE_DIR", tmp_path)
     monkeypatch.setattr(settings, "ROUTINES_DIR", tmp_path / "routines")
     monkeypatch.setattr(settings, "LOGS_DIR", tmp_path / "logs")
+    monkeypatch.setattr(settings, "TARGETS_DIR", tmp_path / "targets")
+    monkeypatch.setattr(settings, "SSH_DIR", tmp_path / "ssh")
     yield
