@@ -9,6 +9,8 @@ class PingMetric(Metric):
         return f"ping {address} -c 4"
 
     def mount_shell_command(self) -> str:
+        if not self.arguments:
+            raise ValueError("metric 'net-ping' requires an address argument, e.g. net-ping 8.8.8.8")
         return self._mount_shell_command(self.arguments[0])
 
 class DnsMetric(Metric):
@@ -18,16 +20,18 @@ class DnsMetric(Metric):
         return f"nslookup {address}"
 
     def mount_shell_command(self) -> str:
+        if not self.arguments:
+            raise ValueError("metric 'net-dns' requires an address argument, e.g. net-dns google.com")
         return self._mount_shell_command(self.arguments[0])
 
 class PublicIPMetric(Metric):
     name = "public-ip"
-    
-    def _mount_shell_command(self, address: str) -> str:
+
+    def _mount_shell_command(self) -> str:
         return f"curl -4 -s ifconfig.me"
 
     def mount_shell_command(self) -> str:
-        return self._mount_shell_command(self.arguments[0])
+        return self._mount_shell_command()
 
 
 METRICS: list[type[Metric]] = [DnsMetric, PingMetric, PublicIPMetric]

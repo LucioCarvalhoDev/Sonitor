@@ -69,7 +69,7 @@ class Snapshot():
         now = datetime.now(timezone.utc)
         ts = now.timestamp()
         human = now.strftime("%Y-%m-%d %H:%M:%S UTC")
-        return f"--- {ts} - {human} - Iteration {iteration} ---"
+        return f"--- {ts} - {human} - Iteration {iteration:03d} ---"
 
     def as_text(self) -> str:
         body = "\n\n".join(result.as_prompt() for result in self.results)

@@ -56,8 +56,8 @@ def test_log_rotation_keeps_last_n_blocks():
     headers = [line for line in content.splitlines() if line.startswith("--- ")]
     assert len(headers) == 3
     # Newest preserved: iterations should be the last three (3, 4, 5).
-    assert "Iteration 5" in content
-    assert "Iteration 1" not in content
+    assert "Iteration 005" in content
+    assert "Iteration 001" not in content
 
 
 def test_reset_clears_log():
