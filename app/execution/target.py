@@ -14,6 +14,13 @@ from typing import Dict, List, Optional
 # prompt, and give up quickly when the host is unreachable.
 DEFAULT_SSH_OPTIONS: List[str] = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
 
+# sshd runs ``ssh host command`` in a *non-interactive* shell whose PATH is often
+# minimal (no /sbin, /usr/sbin) and never picks up the user's dotfiles, so tools
+# like ``asterisk`` or ``tcpdump`` end up "command not found" for the locked
+# ``sonitor`` user. Prepend the standard system dirs to the remote command's PATH
+# so it resolves the same binaries an admin would find on an interactive login.
+REMOTE_PATH: str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 
 @dataclass
 class SshTarget:
@@ -83,14 +90,25 @@ class SshTarget:
         argv.append(self.destination)
         return argv
 
+    def remote_command(self, command: str) -> str:
+        """The command exactly as the remote shell runs it (before SSH wrapping).
+
+        A :data:`REMOTE_PATH` prefix is prepended (then the remote ``$PATH``) so
+        system tools in /sbin and /usr/sbin resolve under the non-interactive SSH
+        shell, which has a minimal PATH and ignores dotfiles.
+        """
+        return f'PATH="{REMOTE_PATH}:$PATH" {command}'
+
     def wrap(self, command: str) -> str:
         """Wrap a local shell command so it runs on the remote host.
 
-        The whole remote command is single-quoted so it reaches the remote
-        shell intact (e.g. ``asterisk -rx "core show channels count"``).
+        Builds the full ``ssh ... '<remote command>'`` string. The remote command
+        (see :meth:`remote_command`) is single-quoted so it reaches the remote
+        shell intact (e.g. ``asterisk -rx "core show channels count"``); ``$PATH``
+        stays literal locally and is expanded by the remote shell.
         """
         prefix = " ".join(shlex.quote(arg) for arg in self.ssh_argv_prefix())
-        return f"{prefix} {shlex.quote(command)}"
+        return f"{prefix} {shlex.quote(self.remote_command(command))}"
 
     def to_dict(self) -> Dict:
         """Serialize for the ``.sonitor`` ``[ssh]`` table (omitting empty fields)."""

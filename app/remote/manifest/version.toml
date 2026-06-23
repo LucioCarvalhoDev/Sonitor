@@ -1,0 +1,3 @@
+[provision]
+version = "@@VERSION@@"
+updated_at = "@@UPDATED_AT@@"

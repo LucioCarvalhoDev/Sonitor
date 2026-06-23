@@ -6,7 +6,7 @@ import app.execution.shell_executor as shell_executor
 from app.collectors import CollectorRepository
 from app.execution import get_executor
 from app.execution.shell_executor import RemoteShellExecutor, ShellExecutor
-from app.execution.target import SshTarget
+from app.execution.target import REMOTE_PATH, SshTarget
 
 
 def test_parse_user_host_port():
@@ -35,8 +35,15 @@ def test_wrap_single_quotes_the_remote_command():
     wrapped = target.wrap('asterisk -rx "core show channels count"')
     assert wrapped == (
         "ssh -o BatchMode=yes -o ConnectTimeout=10 root@10.0.0.5 "
-        "'asterisk -rx \"core show channels count\"'"
+        f"'PATH=\"{REMOTE_PATH}:$PATH\" asterisk -rx \"core show channels count\"'"
     )
+
+
+def test_wrap_prepends_system_path_for_sbin_tools():
+    wrapped = SshTarget.parse("sonitor@pbx").wrap('asterisk -rx "core show channels count"')
+    # the standard sbin dirs are made available, ahead of the remote's own $PATH
+    assert "/usr/sbin" in wrapped and "/sbin" in wrapped
+    assert f'PATH="{REMOTE_PATH}:$PATH"' in wrapped
 
 
 def test_wrap_includes_port_identity_and_options():
@@ -47,7 +54,7 @@ def test_wrap_includes_port_identity_and_options():
     assert "-p 2222" in wrapped
     assert "-i /keys/id" in wrapped
     assert "-o StrictHostKeyChecking=accept-new" in wrapped
-    assert wrapped.endswith("admin@pbx df")
+    assert wrapped.endswith(f"admin@pbx 'PATH=\"{REMOTE_PATH}:$PATH\" df'")
 
 
 def test_target_dict_round_trip():

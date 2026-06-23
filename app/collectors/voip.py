@@ -20,14 +20,28 @@ class ChannelsMetric(Metric):
     def mount_shell_command(self) -> str:
         return self._mount_shell_command()
 
-class ChannelStatusMetric(Metric):
-    name = "channelstatus"
+class ChannelStatsMetric(Metric):
+    name = "channelstats"
 
     def _mount_shell_command(self) -> str:
         return 'asterisk -rx "pjsip show channelstats"'
 
     def mount_shell_command(self) -> str:
         return self._mount_shell_command()
+
+class ContactsMetric(Metric):
+    name = "contacts"
+
+    def _mount_shell_command(self, grep_pattern: str = "") -> str:
+        command = 'asterisk -rx "pjsip show contacts"'
+        if grep_pattern:
+            command += f" | grep {grep_pattern}"
+        return command
+
+    def mount_shell_command(self) -> str:
+        # Optional: any argument is passed straight through to a grep filter,
+        # e.g. voip-contacts 2020@  ->  asterisk -rx "pjsip show contacts" | grep 2020@
+        return self._mount_shell_command(" ".join(self.arguments))
 
 class SipMetric(Metric):
     name = "sip"
@@ -47,8 +61,9 @@ class SipMetric(Metric):
 METRICS: list[type[Metric]] = [
     ChannelsCountMetric,
     ChannelsMetric,
-    ChannelStatusMetric,
+    ChannelStatsMetric,
     SipMetric,
+    ContactsMetric
 ]
 
 class VoipCollector(Collector):

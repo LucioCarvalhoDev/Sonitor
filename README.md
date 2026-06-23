@@ -95,21 +95,41 @@ the recommended way to monitor boxes stuck on old/legacy Python.
 ```
 
 SSH runs with `BatchMode=yes` and `ConnectTimeout=10` so unattended (cron) runs
-never block on a prompt and fail fast when a host is unreachable. Set up key auth
-to the target first (or use `remote setup` below). `--target` works on both
+never block on a prompt and fail fast when a host is unreachable. Each remote
+command is prefixed with a standard `PATH` (including `/usr/sbin` and `/sbin`) so
+system tools like `asterisk` and `tcpdump` resolve under the non-interactive SSH
+shell, which otherwise has a minimal `PATH` and ignores the user's dotfiles. Set
+up key auth to the target first (or use `remote setup` below). `--target` works on both
 `print` and `routine create`; a routine stores its resolved target in the
 `.sonitor` file, so scheduled runs hit the same host.
 
 ```bash
 # One-shot snapshot of a remote Asterisk PBX (ad-hoc spec)
 python3 sonitor.py print --target root@pbx.example.com \
-  --metric voip-channels-count --metric voip-channelstatus
+  --metric voip-channels-count --metric voip-channelstats
 
 # Persist a routine that collects from the PBX every 5 minutes
 python3 sonitor.py routine create 5m --name pbx --target root@10.0.0.5:2222 \
   --ssh-option StrictHostKeyChecking=accept-new \
   --metric voip-channels-count --metric voip-sip "-N -q -O /tmp/cap.pcap"
 ```
+
+### Inspecting a command (`debug metric`)
+
+`debug metric` prints the command layers for a metric **without running anything**
+— handy when a remote command misbehaves. With `--target` it shows the bare metric
+command, the PATH-prefixed command the remote shell runs, and the full ssh wrapper:
+
+```bash
+python3 sonitor.py debug metric --target pbx01 voip-contacts 2020@
+# metric command : asterisk -rx "pjsip show contacts" | grep 2020@
+# remote command : PATH="/usr/local/sbin:...:/sbin:$PATH" asterisk -rx "pjsip show contacts" | grep 2020@
+# ssh wrapper    : ssh -o BatchMode=yes -o ConnectTimeout=10 sonitor@pbx01 '...'
+```
+
+Put `--target` before the metric name; everything after the metric name is
+forwarded to it as arguments (so dashed args like `voip-sip -N -q` work as-is).
+Without `--target` only the bare metric command is shown (it would run locally).
 
 ### Onboarding a target (`remote setup`)
 
@@ -165,6 +185,55 @@ NAME` is `teardown` + `forget` in one step: it undoes the host **and** drops the
 local registry entry and key (`--keep-key` keeps the key); unlike `teardown` it
 only takes a registered name. So `forget` is the local-only cleanup, `teardown` is
 the host-only cleanup, and `purge` does both.
+
+#### Host-side manifest (`/home/sonitor`)
+
+The controller keeps the source of truth (`storage/targets/*.target` + the private
+key), but `setup` also drops a small **manifest** in the `sonitor` user's home so a
+host carries a record of its own provisioning:
+
+```
+/home/sonitor/
+  README.md      what this user is and how to remove it (for a passing sysadmin)
+  version.toml   [provision] version = N — which provisioning version set it up
+  hosts.toml     one [[controller]] per operator machine (key fingerprint + label)
+  uninstall.sh   self-contained removal script, run as root on the host
+```
+
+This addresses three otherwise-invisible situations:
+
+- **Several controllers, one host.** Each `setup` appends the controller's key
+  (idempotent) *and* a `[[controller]]` entry in `hosts.toml`, so the host records
+  who can reach it. `teardown`/`purge` are still global (`userdel -r` revokes every
+  key); when `hosts.toml` lists more than one controller, they print a warning
+  naming the others before the destructive step.
+- **Provisioning drift.** The project version is centralized in `app/version.py`
+  (semantic versioning; print it with `sonitor --version`), and `setup` records it
+  in the host's `version.toml`.
+  `remote check` reads it back and compares it with the controller's version,
+  reporting `ok`, `outdated` (host provisioned by an older release — re-run
+  `setup --force`), `unmanaged` (reachable but no manifest, i.e. a legacy setup)
+  or `unreachable`:
+
+  ```bash
+  python3 sonitor.py remote check pbx01
+  # ok: target 'pbx01' is reachable at sonitor@pbx.example.com (provision v0.1.0)
+  # outdated: ... was provisioned with v0.1.0, but this sonitor expects v0.2.0.
+  #   re-provision with: sonitor remote setup <DEST> --name pbx01 --force
+  ```
+
+- **Removing `sonitor` from the host itself.** When you only have the server (no
+  controller, no registry), an admin can wipe the account directly — the manifest's
+  `README.md` documents exactly this and `uninstall.sh` is the same teardown logic
+  `remote teardown` runs:
+
+  ```bash
+  sudo sh /home/sonitor/uninstall.sh   # removes the user + home, reverts sngrep cap
+  ```
+
+Re-running `setup` (e.g. `--force`) rewrites `version.toml`, `README.md` and
+`uninstall.sh` to the current version and adds the controller to `hosts.toml` if it
+is not already there, so the manifest tracks the latest provisioning.
 
 ## `routine`
 

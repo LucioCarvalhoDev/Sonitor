@@ -5,7 +5,7 @@ from app.collectors.voip import (
     VoipCollector,
     ChannelsCountMetric,
     ChannelsMetric,
-    ChannelStatusMetric,
+    ChannelStatsMetric,
     SipMetric,
 )
 import re

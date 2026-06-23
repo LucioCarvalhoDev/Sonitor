@@ -129,6 +129,87 @@ def test_build_remote_script_no_privileges_skips_setcap():
     assert "usermod -aG asterisk" not in script
 
 
+def test_build_remote_script_writes_manifest_and_uninstall():
+    script = provision.build_remote_script(
+        "ssh-ed25519 AAAAPUB sonitor@demo",
+        fingerprint="SHA256:abc",
+        label="ctrl-01:pbx01",
+        version="0.2.0",
+        now="2026-06-23T00:00:00+00:00",
+    )
+    # version.toml + hosts.toml + README + uninstall.sh land in the home dir
+    assert 'cat > "$H/version.toml"' in script
+    assert 'version = "0.2.0"' in script
+    assert 'cat > "$H/README.md"' in script
+    assert 'cat > "$H/uninstall.sh"' in script
+    assert "chmod 755" in script
+    # this controller is recorded in hosts.toml, idempotently
+    assert "[[controller]]" in script
+    assert "SHA256:abc" in script
+    assert "ctrl-01:pbx01" in script
+    assert "grep -qF 'SHA256:abc'" in script
+    # uninstall.sh embeds the full teardown body
+    assert "userdel -r" in script
+
+
+def test_build_remote_script_without_fingerprint_skips_controller_entry():
+    script = provision.build_remote_script("ssh-ed25519 AAAAPUB sonitor@demo")
+    # the manifest files are still written, but no controller entry without a key
+    assert 'cat > "$H/version.toml"' in script
+    assert "[[controller]]" not in script
+
+
+# --- central version ------------------------------------------------------
+
+def test_provision_version_is_the_central_app_version():
+    from app.version import __version__
+
+    assert provision.PROVISION_VERSION == __version__
+    # a numeric MAJOR.MINOR.PATCH semver, so drift comparison can order it
+    assert provision._version_tuple(__version__) >= (0, 1, 0)
+
+
+# --- canonical manifest templates ----------------------------------------
+
+def test_manifest_templates_exist():
+    for name in ("README.md", "version.toml", "hosts.toml", "controller.toml", "uninstall.sh", "uninstall.privileges.sh"):
+        assert (provision.MANIFEST_DIR / name).is_file(), f"missing manifest template: {name}"
+
+
+def test_uninstall_template_drives_teardown_and_manifest():
+    # the file dropped on the host and the pushed teardown are the same script
+    body = provision.build_teardown_script()
+    assert body == provision._render(
+        provision._load_template("uninstall.sh"),
+        USER=provision.REMOTE_USER,
+        PRIVILEGES=provision._load_template("uninstall.privileges.sh"),
+    )
+    script = provision.build_remote_script("ssh-ed25519 K c@h", fingerprint="SHA256:x", label="c:p")
+    assert body in script  # uninstall.sh content embedded verbatim in the setup script
+
+
+# --- key_fingerprint -----------------------------------------------------
+
+def test_key_fingerprint_extracts_sha256(monkeypatch):
+    monkeypatch.setattr(
+        provision,
+        "run",
+        lambda argv, **kw: CompletedProcess(
+            args=argv, returncode=0, stdout="256 SHA256:abc123 sonitor@demo (ED25519)\n", stderr=""
+        ),
+    )
+    assert provision.key_fingerprint("/abs/ssh/id_deadbeef.pub") == "SHA256:abc123"
+
+
+def test_key_fingerprint_empty_on_failure(monkeypatch):
+    monkeypatch.setattr(
+        provision,
+        "run",
+        lambda argv, **kw: CompletedProcess(args=argv, returncode=1, stdout="", stderr="no such file"),
+    )
+    assert provision.key_fingerprint("/missing.pub") == ""
+
+
 # --- run_setup (ssh + keygen mocked) -------------------------------------
 
 def test_run_setup_provisions_verifies_and_registers(monkeypatch):
@@ -142,6 +223,7 @@ def test_run_setup_provisions_verifies_and_registers(monkeypatch):
     monkeypatch.setattr(
         provision, "generate_keypair", lambda comment=None: ("/abs/ssh/id_deadbeef", "ssh-ed25519 AAAA demo")
     )
+    monkeypatch.setattr(provision, "key_fingerprint", lambda path: "SHA256:test")
 
     result = provision.run_setup("root@server.net:2222", "demo")
 
@@ -175,6 +257,7 @@ def test_run_setup_reuses_key_when_target_already_registered(monkeypatch):
         raise AssertionError("generate_keypair should not run when reusing a key")
 
     monkeypatch.setattr(provision, "generate_keypair", boom)
+    monkeypatch.setattr(provision, "key_fingerprint", lambda path: "SHA256:test")
     monkeypatch.setattr(
         provision, "run", lambda argv, **kw: CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
     )
@@ -230,9 +313,10 @@ def test_run_teardown_undoes_remote_only_and_keeps_registration(monkeypatch):
     assert priv.with_name(priv.name + ".pub").exists()
 
     # destination is derived from the registry: interactive ssh -t as root@host:port
-    assert calls[0][0] == "ssh" and "-t" in calls[0]
-    assert "root@server.net" in calls[0]
-    assert "2222" in calls[0]
+    teardown_call = next(c for c in calls if "-t" in c)
+    assert teardown_call[0] == "ssh"
+    assert "root@server.net" in teardown_call
+    assert "2222" in teardown_call
     # then the sanity check with the sonitor key
     assert any("-i" in c and str(priv) in c for c in calls)
 
@@ -247,7 +331,7 @@ def test_run_teardown_respects_bootstrap_user(monkeypatch):
     )
 
     provision.run_teardown("demo", bootstrap_user="admin")
-    assert "admin@server.net" in calls[0]
+    assert "admin@server.net" in next(c for c in calls if "-t" in c)
 
 
 def test_run_teardown_explicit_destination_skips_registry(monkeypatch):
@@ -282,30 +366,71 @@ def test_run_teardown_raises_when_remote_fails(monkeypatch):
 
 # --- run_check (ssh mocked) ----------------------------------------------
 
-def test_run_check_ok_when_ssh_succeeds(monkeypatch):
+def _version_toml(version):
+    return f'[provision]\nversion = "{version}"\nupdated_at = "2026-06-23T00:00:00+00:00"\n'
+
+
+def test_run_check_ok_when_version_matches(monkeypatch):
     priv = _registered_with_key(host="server.net", port=2222)
     calls = []
 
     def fake_run(argv, **kwargs):
         calls.append(argv)
-        return CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+        return CompletedProcess(
+            args=argv, returncode=0, stdout=_version_toml(provision.PROVISION_VERSION), stderr=""
+        )
 
     monkeypatch.setattr(provision, "run", fake_run)
 
-    entry, ok, detail = provision.run_check("demo")
+    result = provision.run_check("demo")
 
-    assert ok is True
-    assert detail == ""
-    assert entry.name == "demo"
-    # connects with the stored key as the sonitor user and runs a trivial command
+    assert result.status == provision.CHECK_OK
+    assert result.reachable is True
+    assert result.remote_version == provision.PROVISION_VERSION
+    assert result.entry.name == "demo"
+    # connects with the stored key as the sonitor user and reads the manifest
     assert calls[0][0] == "ssh"
     assert "-i" in calls[0] and str(priv) in calls[0]
     assert "sonitor@server.net" in calls[0]
     assert "2222" in calls[0]
-    assert calls[0][-1] == "true"
+    assert "version.toml" in calls[0][-1]
 
 
-def test_run_check_fails_and_reports_detail(monkeypatch):
+def test_run_check_outdated_when_version_older(monkeypatch):
+    _registered_with_key()
+    monkeypatch.setattr(
+        provision,
+        "run",
+        lambda argv, **kw: CompletedProcess(
+            args=argv, returncode=0, stdout=_version_toml("0.0.1"), stderr=""
+        ),
+    )
+
+    result = provision.run_check("demo")
+
+    assert result.status == provision.CHECK_OUTDATED
+    assert result.reachable is True
+    assert result.remote_version == "0.0.1"
+    assert result.expected_version == provision.PROVISION_VERSION
+
+
+def test_run_check_unmanaged_when_no_manifest(monkeypatch):
+    _registered_with_key()
+    # reachable, but the host has no version.toml (legacy provisioning)
+    monkeypatch.setattr(
+        provision,
+        "run",
+        lambda argv, **kw: CompletedProcess(args=argv, returncode=0, stdout="", stderr=""),
+    )
+
+    result = provision.run_check("demo")
+
+    assert result.status == provision.CHECK_UNMANAGED
+    assert result.reachable is True
+    assert result.remote_version is None
+
+
+def test_run_check_unreachable_and_reports_detail(monkeypatch):
     _registered_with_key()
     monkeypatch.setattr(
         provision,
@@ -313,16 +438,59 @@ def test_run_check_fails_and_reports_detail(monkeypatch):
         lambda argv, **kw: CompletedProcess(args=argv, returncode=255, stdout="", stderr="Connection refused"),
     )
 
-    entry, ok, detail = provision.run_check("demo")
+    result = provision.run_check("demo")
 
-    assert ok is False
-    assert detail == "Connection refused"
-    assert entry.name == "demo"
+    assert result.status == provision.CHECK_UNREACHABLE
+    assert result.reachable is False
+    assert result.detail == "Connection refused"
+    assert result.entry.name == "demo"
 
 
 def test_run_check_unknown_target_raises():
     with pytest.raises(ValueError):
         provision.run_check("ghost")
+
+
+# --- run_teardown multi-controller warning -------------------------------
+
+_TWO_CONTROLLERS = (
+    '# hosts\n\n'
+    '[[controller]]\nfingerprint = "SHA256:a"\nlabel = "m1:demo"\n\n'
+    '[[controller]]\nfingerprint = "SHA256:b"\nlabel = "m2:demo"\n'
+)
+
+
+def test_run_teardown_warns_when_multiple_controllers(monkeypatch, capsys):
+    _registered_with_key(host="server.net")
+
+    def fake_run(argv, **kwargs):
+        if "hosts.toml" in (argv[-1] if argv else ""):
+            return CompletedProcess(args=argv, returncode=0, stdout=_TWO_CONTROLLERS, stderr="")
+        return CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(provision, "run", fake_run)
+
+    provision.run_teardown("demo")
+
+    err = capsys.readouterr().err
+    assert "2 controllers" in err
+    assert "m1:demo" in err and "m2:demo" in err
+
+
+def test_run_teardown_no_warning_for_single_controller(monkeypatch, capsys):
+    _registered_with_key(host="server.net")
+    one = '# hosts\n\n[[controller]]\nfingerprint = "SHA256:a"\nlabel = "m1:demo"\n'
+
+    def fake_run(argv, **kwargs):
+        if "hosts.toml" in (argv[-1] if argv else ""):
+            return CompletedProcess(args=argv, returncode=0, stdout=one, stderr="")
+        return CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(provision, "run", fake_run)
+
+    provision.run_teardown("demo")
+
+    assert "controllers are registered" not in capsys.readouterr().err
 
 
 # --- run_purge (name-based teardown) -------------------------------------
@@ -344,9 +512,10 @@ def test_run_purge_derives_root_destination_and_forgets(monkeypatch):
     assert not store.exists("demo")
     assert not priv.exists()
     # bootstrapped as root@<host>:<port> derived from the registry
-    assert calls[0][0] == "ssh" and "-t" in calls[0]
-    assert "root@server.net" in calls[0]
-    assert "2222" in calls[0]
+    teardown_call = next(c for c in calls if "-t" in c)
+    assert teardown_call[0] == "ssh"
+    assert "root@server.net" in teardown_call
+    assert "2222" in teardown_call
 
 
 def test_run_purge_respects_bootstrap_user(monkeypatch):
@@ -359,7 +528,7 @@ def test_run_purge_respects_bootstrap_user(monkeypatch):
     )
 
     provision.run_purge("demo", bootstrap_user="admin")
-    assert "admin@server.net" in calls[0]
+    assert "admin@server.net" in next(c for c in calls if "-t" in c)
 
 
 def test_run_purge_unknown_target_raises():

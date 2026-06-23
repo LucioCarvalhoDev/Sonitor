@@ -11,6 +11,7 @@ from app.remote import store as remote_store
 from app.routines import runner, store
 from app.routines.model import parse_period
 from app.scheduler import get_scheduler
+from app.version import __version__
 
 
 def _build_target(
@@ -63,6 +64,29 @@ def run_print(
     else:
         print(text)
 
+    return 0
+
+
+def run_debug_metric(
+    metric_name: str,
+    arguments: List[str],
+    target: SshTarget | None = None,
+) -> int:
+    """Show, without running anything, the command layers for a metric.
+
+    Prints the bare metric command and — when ``--target`` is given — the
+    PATH-prefixed command the remote shell would run and the full ssh wrapper
+    sonitor would invoke locally.
+    """
+    metric = build_metrics([[metric_name, *arguments]])[0]
+    bare = metric.mount_shell_command()
+
+    print(f"metric command : {bare}")
+    if target is None:
+        print("execution      : local (no --target; runs as-is, no ssh/PATH wrapper)")
+        return 0
+    print(f"remote command : {target.remote_command(bare)}")
+    print(f"ssh wrapper    : {target.wrap(bare)}")
     return 0
 
 
@@ -228,6 +252,7 @@ def run_remote_setup(destination: str, name: str, no_privileges: bool, force: bo
     target = provision.run_setup(destination, name, no_privileges=no_privileges, force=force)
     print(f"registered target '{name}' -> {target.target.destination}")
     print(f"  identity: {target.target.identity_file}")
+    print(f"  manifest on host: /home/{provision.REMOTE_USER} (README.md, version.toml, hosts.toml, uninstall.sh)")
     print(f"  try: sonitor print --target {name} --metric sys-uptime")
     return 0
 
@@ -280,12 +305,27 @@ def run_remote_purge(name: str, bootstrap_user: str, no_privileges: bool, keep_k
 
 
 def run_remote_check(name: str) -> int:
-    entry, ok, detail = provision.run_check(name)
+    result = provision.run_check(name)
+    entry = result.entry
     dest = entry.target.destination + (f":{entry.target.port}" if entry.target.port else "")
-    if ok:
-        print(f"ok: target '{name}' is reachable at {dest}")
+    if result.status == provision.CHECK_OK:
+        print(f"ok: target '{name}' is reachable at {dest} (provision v{result.remote_version})")
         return 0
-    print(f"error: target '{name}' is unreachable at {dest}: {detail}", file=sys.stderr)
+    if result.status == provision.CHECK_OUTDATED:
+        print(
+            f"outdated: target '{name}' at {dest} was provisioned with v{result.remote_version}, "
+            f"but this sonitor expects v{result.expected_version}.\n"
+            f"  re-provision with: sonitor remote setup <DEST> --name {name} --force"
+        )
+        return 0
+    if result.status == provision.CHECK_UNMANAGED:
+        print(
+            f"unmanaged: target '{name}' is reachable at {dest} but has no manifest "
+            "(provisioned by an older sonitor).\n"
+            f"  re-provision with: sonitor remote setup <DEST> --name {name} --force"
+        )
+        return 0
+    print(f"error: target '{name}' is unreachable at {dest}: {result.detail}", file=sys.stderr)
     return 1
 
 
@@ -501,6 +541,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog="sonitor",
         description="Collect and log server metrics from Linux systems and networks.",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"sonitor {__version__}",
+        help="Show the sonitor version and exit.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     print_parser = subparsers.add_parser(
@@ -524,8 +570,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     _add_routine_parser(subparsers)
     _add_remote_parser(subparsers)
+    _add_debug_parser(subparsers)
 
     return parser
+
+
+def _add_debug_parser(subparsers: argparse._SubParsersAction) -> None:
+    debug_parser = subparsers.add_parser(
+        "debug", help="Inspect what sonitor would run, without executing it."
+    )
+    actions = debug_parser.add_subparsers(dest="action", required=True)
+
+    metric = actions.add_parser(
+        "metric",
+        help="Show the command layers (metric command, remote command, ssh wrapper) for a metric.",
+    )
+    metric.add_argument("metric", metavar="METRIC", help="Metric name, e.g. voip-contacts.")
+    metric.add_argument(
+        "arguments",
+        nargs=argparse.REMAINDER,
+        metavar="ARG",
+        help="Arguments forwarded to the metric (everything after METRIC).",
+    )
+    _add_ssh_arguments(metric)
 
 
 def _dispatch_remote(args: argparse.Namespace) -> int:
@@ -544,6 +611,13 @@ def _dispatch_remote(args: argparse.Namespace) -> int:
     if args.action == "purge":
         return run_remote_purge(args.name, args.bootstrap_user, args.no_privileges, args.keep_key)
     raise ValueError(f"unknown remote action: {args.action}")
+
+
+def _dispatch_debug(args: argparse.Namespace) -> int:
+    if args.action == "metric":
+        target = _build_target(args.target, args.identity, args.ssh_options)
+        return run_debug_metric(args.metric, args.arguments, target)
+    raise ValueError(f"unknown debug action: {args.action}")
 
 
 def _dispatch_routine(args: argparse.Namespace) -> int:
@@ -585,6 +659,8 @@ def main(argv: List[str] | None = None) -> int:
             return _dispatch_routine(args)
         if args.command == "remote":
             return _dispatch_remote(args)
+        if args.command == "debug":
+            return _dispatch_debug(args)
     except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
