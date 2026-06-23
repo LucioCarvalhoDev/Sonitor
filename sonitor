@@ -5,6 +5,15 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="${SONITOR_PYTHON:-python3}"
+
+# Prefer the project's virtualenv so dependencies resolve the same way whether
+# run by hand or from cron. An explicit SONITOR_PYTHON still wins.
+if [ -n "${SONITOR_PYTHON:-}" ]; then
+    PYTHON="$SONITOR_PYTHON"
+elif [ -x "$HERE/.venv/bin/python" ]; then
+    PYTHON="$HERE/.venv/bin/python"
+else
+    PYTHON="python3"
+fi
 
 exec "$PYTHON" "$HERE/sonitor.py" "$@"

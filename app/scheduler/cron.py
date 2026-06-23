@@ -54,8 +54,21 @@ class CronScheduler(Scheduler):
         return f"# sonitor:{routine_uuid}"
 
     @staticmethod
-    def _command(routine_uuid: str) -> str:
-        python = sys.executable
+    def _python() -> str:
+        """Interpreter for cron entries, preferring the project's virtualenv.
+
+        Cron runs with a bare environment, so we pin an absolute interpreter
+        rather than relying on PATH. The venv keeps the cron run consistent with
+        the ``./sonitor`` wrapper regardless of how ``routine enable`` was run.
+        """
+        venv_python = settings.BASE_DIR / ".venv" / "bin" / "python"
+        if venv_python.exists():
+            return str(venv_python)
+        return sys.executable
+
+    @classmethod
+    def _command(cls, routine_uuid: str) -> str:
+        python = cls._python()
         entrypoint = settings.BASE_DIR / "sonitor.py"
         return (
             f"cd {settings.BASE_DIR} && {python} {entrypoint} "
