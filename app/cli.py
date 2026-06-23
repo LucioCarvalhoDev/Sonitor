@@ -6,6 +6,7 @@ from typing import Dict, List
 from app.collectors import CollectorRepository, Metric, MetricResult, Snapshot
 from app.execution import get_executor
 from app.execution.target import SshTarget
+from app.remote import audit as remote_audit
 from app.remote import provision
 from app.remote import store as remote_store
 from app.routines import runner, store
@@ -337,6 +338,90 @@ def run_remote_rename(current: str, new: str) -> int:
     return 0
 
 
+_CHECK_LABELS = {
+    provision.CHECK_OK: "ok",
+    provision.CHECK_OUTDATED: "OUTDATED",
+    provision.CHECK_UNMANAGED: "UNMANAGED",
+    provision.CHECK_UNREACHABLE: "UNREACHABLE",
+}
+
+
+def _target_status_line(audit: remote_audit.TargetAudit, checked: bool) -> str:
+    """One-line health summary for a target: key-pair integrity, then reachability."""
+    if audit.no_identity:
+        return "no SSH key on record"
+
+    problems: List[str] = []
+    if audit.missing_private:
+        problems.append(f"private key missing ({audit.entry.target.identity_file})")
+    if audit.missing_public:
+        problems.append("public key (.pub) missing")
+    if problems:
+        return "; ".join(problems)
+
+    if not checked:
+        return "key ok (connectivity not checked)"
+
+    check = audit.check
+    label = _CHECK_LABELS.get(check.status, check.status)
+    if check.status == provision.CHECK_OK:
+        return f"ok — reachable, provision v{check.remote_version}"
+    if check.status == provision.CHECK_OUTDATED:
+        return f"{label} — provisioned v{check.remote_version}, expected v{check.expected_version}"
+    if check.status == provision.CHECK_UNMANAGED:
+        return f"{label} — reachable but no manifest (legacy provisioning)"
+    return f"{label} — {check.detail}"
+
+
+def run_audit(no_check: bool = False, prune_keys: bool = False) -> int:
+    """Audit the local remote registry, SSH keys and routines; optionally prune unused keys."""
+    report = remote_audit.run_audit(do_check=not no_check)
+    checked = not no_check
+
+    if report.targets:
+        print(f"Registered targets ({len(report.targets)}):")
+        for audit in report.targets:
+            marker = "  " if not audit.has_issue else "! "
+            print(f"  {marker}{audit.name:<16}  {_target_status_line(audit, checked)}")
+    else:
+        print("Registered targets: none")
+
+    if report.unreadable_targets:
+        print(f"\nUnreadable target files ({len(report.unreadable_targets)}):")
+        for path in report.unreadable_targets:
+            print(f"  ! {path}")
+
+    if report.orphan_keys or report.lone_public_keys:
+        total = len(report.orphan_keys) + len(report.lone_public_keys)
+        print(f"\nUnused SSH keys ({total}):")
+        for orphan in report.orphan_keys:
+            suffix = " (+ .pub)" if orphan.public else " (no .pub)"
+            print(f"  ! {orphan.private.name}{suffix}")
+        for public in report.lone_public_keys:
+            print(f"  ! {public.name} (orphaned .pub, private key gone)")
+        if not prune_keys:
+            print("  → delete them with: sonitor audit --prune-keys")
+
+    if report.routine_issues:
+        print(f"\nRoutine problems ({len(report.routine_issues)}):")
+        for issue in report.routine_issues:
+            ref = issue.name or issue.uuid
+            print(f"  ! {ref}: {issue.detail}")
+
+    remaining = report.issue_count
+    if prune_keys and (report.orphan_keys or report.lone_public_keys):
+        removed = remote_audit.prune_orphan_keys(report)
+        print(f"\npruned {len(removed)} unused key file group(s).")
+        remaining -= len(report.orphan_keys) + len(report.lone_public_keys)
+
+    print()
+    if remaining == 0:
+        print("audit: clean — no inconsistencies found.")
+        return 0
+    print(f"audit: {remaining} issue(s) found.")
+    return 1
+
+
 def _add_ssh_arguments(parser: argparse.ArgumentParser) -> None:
     """Add the agentless SSH target flags shared by `print` and `routine create`."""
     parser.add_argument(
@@ -570,9 +655,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     _add_routine_parser(subparsers)
     _add_remote_parser(subparsers)
+    _add_audit_parser(subparsers)
     _add_debug_parser(subparsers)
 
     return parser
+
+
+def _add_audit_parser(subparsers: argparse._SubParsersAction) -> None:
+    audit_parser = subparsers.add_parser(
+        "audit",
+        help="Check every registered target and flag unused SSH keys or stale registry records.",
+    )
+    audit_parser.add_argument(
+        "--no-check",
+        action="store_true",
+        help="Skip the per-target SSH connectivity check (offline, registry/key hygiene only).",
+    )
+    audit_parser.add_argument(
+        "--prune-keys",
+        action="store_true",
+        help="Delete the unused SSH keys the audit finds (orphaned private keys and lone .pub files).",
+    )
 
 
 def _add_debug_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -659,6 +762,8 @@ def main(argv: List[str] | None = None) -> int:
             return _dispatch_routine(args)
         if args.command == "remote":
             return _dispatch_remote(args)
+        if args.command == "audit":
+            return run_audit(args.no_check, args.prune_keys)
         if args.command == "debug":
             return _dispatch_debug(args)
     except ValueError as error:

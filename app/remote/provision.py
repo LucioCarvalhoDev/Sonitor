@@ -367,7 +367,7 @@ def run_purge(
     no_privileges: bool = False,
     keep_key: bool = False,
 ) -> Target:
-    """Tear down a *registered* target on its host *and* forget it locally.
+    """Tear down a *registered* target on its host *and* erase it locally.
 
     Runs :func:`run_teardown` (remote cleanup) then removes the registry entry
     and, unless ``keep_key``, the local SSH key — i.e. ``teardown`` + ``forget``.
@@ -424,10 +424,8 @@ def _warn_if_other_controllers(entry: Target) -> None:
 def run_check(name: str) -> CheckResult:
     """Verify a registered target still authenticates *and* report provisioning drift.
 
-    Connects exactly as agentless collection would — using the target's stored
-    identity and options, in ``BatchMode`` so it never blocks on a password or
-    host-key prompt — and reads the host-side ``version.toml``. Returns a
-    :class:`CheckResult` whose ``status`` is one of ``CHECK_OK`` (version matches
+    Connects using the target's stored identity and reads the host-side ``version.toml``. 
+    Returns a :class:`CheckResult` whose ``status`` is one of ``CHECK_OK`` (version matches
     or is newer), ``CHECK_OUTDATED`` (provisioned by an older version — re-run
     ``setup --force``), ``CHECK_UNMANAGED`` (reachable but no manifest, i.e. a
     legacy provisioning) or ``CHECK_UNREACHABLE`` (ssh failed). Raises

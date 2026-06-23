@@ -549,3 +549,133 @@ def test_run_setup_raises_when_verification_fails(monkeypatch):
 
     with pytest.raises(RuntimeError):
         provision.run_setup("root@server.net", "demo")
+
+
+# --- audit ---------------------------------------------------------------
+
+from app import settings
+from app.remote import audit
+from app.routines import store as routine_store
+from app.routines.model import Routine
+
+
+def _write_keypair(key_id, with_pub=True):
+    """Drop a private (and optionally public) key file under SSH_DIR; return the private path."""
+    priv = provision.key_path(key_id)
+    priv.parent.mkdir(parents=True, exist_ok=True)
+    priv.write_text("PRIV")
+    if with_pub:
+        priv.with_name(priv.name + ".pub").write_text("ssh-ed25519 AAAA demo")
+    return priv
+
+
+def test_audit_clean_when_only_referenced_keys_exist():
+    _registered_with_key()  # target 'demo' referencing id_feed (+ .pub)
+    report = audit.run_audit(do_check=False)
+
+    assert report.clean
+    assert report.issue_count == 0
+    assert [t.name for t in report.targets] == ["demo"]
+    assert not report.targets[0].has_issue
+
+
+def test_audit_flags_orphan_key_not_referenced():
+    _registered_with_key()
+    _write_keypair("cafe")  # nothing references it
+
+    report = audit.run_audit(do_check=False)
+
+    assert [o.private.name for o in report.orphan_keys] == ["id_cafe"]
+    assert report.orphan_keys[0].public is not None
+    assert report.issue_count == 1
+
+
+def test_audit_orphan_excludes_keys_used_only_by_a_routine():
+    priv = _write_keypair("beef")
+    routine_store.save(
+        Routine(uuid="r1", period="1m", target=SshTarget(host="h", user="sonitor", identity_file=str(priv)))
+    )
+    report = audit.run_audit(do_check=False)
+
+    assert report.orphan_keys == []  # the routine keeps it alive
+    assert report.clean
+
+
+def test_audit_flags_target_with_missing_private_key():
+    store.save(_make(name="ghosttarget", identity=str(provision.key_path("missing"))))
+    report = audit.run_audit(do_check=False)
+
+    target = next(t for t in report.targets if t.name == "ghosttarget")
+    assert target.missing_private
+    assert target.has_issue
+
+
+def test_audit_flags_lone_public_key():
+    _registered_with_key()
+    pub = provision.key_path("dead").with_name("id_dead.pub")
+    pub.parent.mkdir(parents=True, exist_ok=True)
+    pub.write_text("ssh-ed25519 AAAA stray")
+
+    report = audit.run_audit(do_check=False)
+
+    assert [p.name for p in report.lone_public_keys] == ["id_dead.pub"]
+
+
+def test_audit_flags_unreadable_target_file():
+    _registered_with_key()
+    settings.TARGETS_DIR.mkdir(parents=True, exist_ok=True)
+    (settings.TARGETS_DIR / "broken.target").write_text("this is = not valid = toml [[[")
+
+    report = audit.run_audit(do_check=False)
+
+    assert [p.name for p in report.unreadable_targets] == ["broken.target"]
+    assert report.issue_count >= 1
+
+
+def test_audit_flags_routine_with_deleted_key():
+    routine_store.save(
+        Routine(
+            uuid="r2",
+            period="1m",
+            name="contacts",
+            target=SshTarget(host="h", user="sonitor", identity_file="/gone/id_nope"),
+        )
+    )
+    report = audit.run_audit(do_check=False)
+
+    assert len(report.routine_issues) == 1
+    assert report.routine_issues[0].name == "contacts"
+
+
+def test_prune_orphan_keys_removes_only_unused(monkeypatch):
+    priv = _registered_with_key()  # referenced: must survive
+    orphan = _write_keypair("cafe")
+    lone_pub = provision.key_path("dead").with_name("id_dead.pub")
+    lone_pub.write_text("stray")
+
+    report = audit.run_audit(do_check=False)
+    removed = audit.prune_orphan_keys(report)
+
+    assert orphan in removed and lone_pub in removed
+    assert not orphan.exists()
+    assert not orphan.with_name(orphan.name + ".pub").exists()
+    assert not lone_pub.exists()
+    assert priv.exists()  # referenced key untouched
+
+
+def test_audit_runs_per_target_check_when_online(monkeypatch):
+    _registered_with_key(name="demo")
+    captured = []
+
+    def fake_check(name):
+        captured.append(name)
+        entry = store.resolve(name)
+        return provision.CheckResult(entry, provision.CHECK_OK, remote_version="9.9.9")
+
+    monkeypatch.setattr(provision, "run_check", fake_check)
+
+    report = audit.run_audit(do_check=True)
+
+    assert captured == ["demo"]
+    assert report.targets[0].check.status == provision.CHECK_OK
+    assert report.clean

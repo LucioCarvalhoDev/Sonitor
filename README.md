@@ -235,6 +235,43 @@ Re-running `setup` (e.g. `--force`) rewrites `version.toml`, `README.md` and
 `uninstall.sh` to the current version and adds the controller to `hosts.toml` if it
 is not already there, so the manifest tracks the latest provisioning.
 
+### Auditing the whole registry (`audit`)
+
+Where `remote check` probes a *single* target, `audit` looks at the whole local
+state at once and flags inconsistencies you would otherwise have to hunt for:
+
+```bash
+sonitor audit                 # check every target over SSH + report registry/key hygiene
+sonitor audit --no-check      # offline: skip the SSH probes, inspect local state only
+sonitor audit --prune-keys    # also delete the unused SSH keys it finds
+```
+
+It reports, per registered target, key-pair integrity and reachability/version
+drift (reusing `remote check`), then surfaces:
+
+- **unused SSH keys** — private keys under `storage/ssh` that no target *or* routine
+  references anymore (left behind by `forget --keep-key`, interrupted `setup --force`,
+  etc.) and lone `.pub` files whose private half is gone;
+- **unreadable `.target` files** that no longer parse;
+- **routines** whose stored SSH key was since deleted (they would fail at run time).
+
+```bash
+sonitor audit --no-check
+# Registered targets (1):
+#     pbx01             key ok (connectivity not checked)
+#
+# Unused SSH keys (2):
+#   ! id_8d0dabd84474471caa8f92859fa19a27 (+ .pub)
+#   ! id_a97a80a522fe43aebfe1ed2157fc0707 (+ .pub)
+#   → delete them with: sonitor audit --prune-keys
+#
+# audit: 2 issue(s) found.
+```
+
+A key referenced by a routine is treated as *in use*, so `--prune-keys` never breaks
+a routine. The command exits non-zero when any issue remains (handy for cron/CI);
+`--prune-keys` resolves the unused-key findings before that exit code is computed.
+
 ## `routine`
 
 A routine is a named, persisted set of metrics with a recurrence period. It is
