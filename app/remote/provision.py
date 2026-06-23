@@ -240,6 +240,26 @@ def run_purge(
     return entry
 
 
+def run_check(name: str, command: str = "true") -> Tuple[Target, bool, str]:
+    """Verify a registered target still authenticates over SSH.
+
+    Connects exactly as agentless collection would — using the target's stored
+    identity and options, in ``BatchMode`` so it never blocks on a password or
+    host-key prompt — and runs a trivial command on the remote host. Returns
+    ``(entry, ok, detail)`` where ``ok`` is whether the connection succeeded and
+    ``detail`` carries ssh's error output when it did not. Raises ``ValueError``
+    when ``name`` is not a registered target.
+    """
+    entry = store.resolve(name)  # raises ValueError if unknown
+    argv = entry.target.ssh_argv_prefix() + [command]
+    result = run(argv, capture_output=True, text=True)
+    ok = result.returncode == 0
+    detail = "" if ok else (
+        result.stderr.strip() or result.stdout.strip() or f"ssh exit {result.returncode}"
+    )
+    return entry, ok, detail
+
+
 def rename_target(current: str, new: str) -> Target:
     """Rename a registered target.
 

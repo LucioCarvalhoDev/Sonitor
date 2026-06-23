@@ -280,6 +280,51 @@ def test_run_teardown_raises_when_remote_fails(monkeypatch):
     assert store.exists("demo")
 
 
+# --- run_check (ssh mocked) ----------------------------------------------
+
+def test_run_check_ok_when_ssh_succeeds(monkeypatch):
+    priv = _registered_with_key(host="server.net", port=2222)
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(provision, "run", fake_run)
+
+    entry, ok, detail = provision.run_check("demo")
+
+    assert ok is True
+    assert detail == ""
+    assert entry.name == "demo"
+    # connects with the stored key as the sonitor user and runs a trivial command
+    assert calls[0][0] == "ssh"
+    assert "-i" in calls[0] and str(priv) in calls[0]
+    assert "sonitor@server.net" in calls[0]
+    assert "2222" in calls[0]
+    assert calls[0][-1] == "true"
+
+
+def test_run_check_fails_and_reports_detail(monkeypatch):
+    _registered_with_key()
+    monkeypatch.setattr(
+        provision,
+        "run",
+        lambda argv, **kw: CompletedProcess(args=argv, returncode=255, stdout="", stderr="Connection refused"),
+    )
+
+    entry, ok, detail = provision.run_check("demo")
+
+    assert ok is False
+    assert detail == "Connection refused"
+    assert entry.name == "demo"
+
+
+def test_run_check_unknown_target_raises():
+    with pytest.raises(ValueError):
+        provision.run_check("ghost")
+
+
 # --- run_purge (name-based teardown) -------------------------------------
 
 def test_run_purge_derives_root_destination_and_forgets(monkeypatch):

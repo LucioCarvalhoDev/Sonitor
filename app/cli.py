@@ -279,6 +279,16 @@ def run_remote_purge(name: str, bootstrap_user: str, no_privileges: bool, keep_k
     return 0
 
 
+def run_remote_check(name: str) -> int:
+    entry, ok, detail = provision.run_check(name)
+    dest = entry.target.destination + (f":{entry.target.port}" if entry.target.port else "")
+    if ok:
+        print(f"ok: target '{name}' is reachable at {dest}")
+        return 0
+    print(f"error: target '{name}' is unreachable at {dest}: {detail}", file=sys.stderr)
+    return 1
+
+
 def run_remote_rename(current: str, new: str) -> int:
     renamed = provision.rename_target(current, new)
     print(f"renamed target '{current}' -> '{new}'")
@@ -421,6 +431,12 @@ def _add_remote_parser(subparsers: argparse._SubParsersAction) -> None:
 
     actions.add_parser("list", help="List registered targets.")
 
+    check = actions.add_parser(
+        "check",
+        help="Verify a registered target still connects over SSH (as agentless collection would).",
+    )
+    check.add_argument("name", metavar="NAME", help="Registered target name.")
+
     rename = actions.add_parser(
         "rename", help="Rename a registered target (and its local SSH key files)."
     )
@@ -517,6 +533,8 @@ def _dispatch_remote(args: argparse.Namespace) -> int:
         return run_remote_setup(args.destination, args.name, args.no_privileges, args.force)
     if args.action == "list":
         return run_remote_list()
+    if args.action == "check":
+        return run_remote_check(args.name)
     if args.action == "rename":
         return run_remote_rename(args.current, args.new)
     if args.action == "forget":
