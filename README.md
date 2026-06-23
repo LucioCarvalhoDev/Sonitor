@@ -169,22 +169,7 @@ Keys live under `storage/ssh/id_<uuid>` (0600) and the registry under
 `storage/targets/<name>.target` — both inside the git-ignored `storage/`. Key files
 are named by UUID, not by target name: the registry entry owns the path reference.
 The key has no passphrase (so cron can use it); its protection is filesystem
-permissions plus the locked `sonitor` account. `remote rename` is a pure registry
-operation — the key file stays put, so routines created before the rename keep
-working. `remote forget` deletes the local key and registry entry but leaves the
-`sonitor` user on the remote host in place. `remote teardown` is the inverse of
-`setup` on the **host side only**, and accepts either a registered name or an
-explicit `[user@]host[:port]` destination. With a name it looks the host up in the
-registry and bootstraps as `root@<host>` (override with `--bootstrap-user`); with
-an explicit destination it connects there verbatim with no registry lookup. Either
-way it reconnects with privileged credentials (the locked `sonitor` user can't
-remove itself, so SSH prompts for the root password again), runs `userdel -r
-sonitor` and reverts the `sngrep` capability (`--no-privileges` keeps the
-capability), and leaves the local registration and key in place. `remote purge
-NAME` is `teardown` + `forget` in one step: it undoes the host **and** drops the
-local registry entry and key (`--keep-key` keeps the key); unlike `teardown` it
-only takes a registered name. So `forget` is the local-only cleanup, `teardown` is
-the host-only cleanup, and `purge` does both.
+permissions plus the locked `sonitor` account.
 
 #### Host-side manifest (`/home/sonitor`)
 
@@ -428,16 +413,4 @@ storage/
 - **Scheduler** — interface (`app/scheduler/base.py`) that hooks a routine into a
   recurring mechanism; `CronScheduler` is the first implementation.
 
-## Roadmap
-
-- **v0.1** — `print` with sys + net metrics. ✅ shipped.
-- **v0.2** — `routine create/list/run/reset` (TOML `.sonitor` files + rotated
-  logs) and `routine enable`/`disable` via a `Scheduler` interface (cron impl;
-  in-process stubbed), with a `pytest` suite. ✅ shipped.
-- **v0.3** — VoIP / Asterisk (PJSIP) metrics + `sngrep`, agentless collection
-  over SSH (`--target`), and `remote setup` to onboard targets (named registry +
-  key provisioning). ✅ shipped.
-- **Next** — in-process scheduler implementation, structured JSON output.
-
-See `plan.md` for the implementation breakdown.
 ```
