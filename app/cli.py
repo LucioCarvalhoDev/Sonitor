@@ -68,6 +68,18 @@ def run_print(
     return 0
 
 
+def run_metric_man(name: str) -> int:
+    """Print the documentation (``man``) for a collector or a metric.
+
+    A bare collector name (e.g. ``voip``) prints the collector man; a metric
+    full name (e.g. ``voip-contacts``) prints the metric man. Resolution errors
+    raise ``ValueError`` from the repository and are reported by ``main``.
+    """
+    man: str = CollectorRepository.generate_man(name)
+    print(man)
+    return 0
+
+
 def run_debug_metric(
     metric_name: str,
     arguments: List[str],
@@ -653,6 +665,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_ssh_arguments(print_parser)
 
+    metric_parser = subparsers.add_parser(
+        "metric", help="Show the documentation (man) for a collector or a metric."
+    )
+    metric_parser.add_argument(
+        "metric",
+        metavar="COLLECTOR|METRIC",
+        help="Collector name (e.g. voip) or metric name (e.g. net-public-ip).",
+    )
+
     _add_routine_parser(subparsers)
     _add_remote_parser(subparsers)
     _add_audit_parser(subparsers)
@@ -758,6 +779,8 @@ def main(argv: List[str] | None = None) -> int:
         if args.command == "print":
             target = _build_target(args.target, args.identity, args.ssh_options)
             return run_print(args.metrics, args.output, target)
+        if args.command == "metric":
+            return run_metric_man(args.metric)
         if args.command == "routine":
             return _dispatch_routine(args)
         if args.command == "remote":

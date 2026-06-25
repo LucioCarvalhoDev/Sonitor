@@ -4,6 +4,13 @@ from typing import Dict, List
 class Metric():
     name: str = "_"
 
+    # Documentation fields used to build the metric man page procedurally
+    # (see CollectorRepository.generate_metric_man). Each subclass overrides
+    # the ones that apply; unset fields fall back to a placeholder.
+    description: str | None = None
+    shell: str | None = None
+    arguments_doc: str | None = None
+
     def __init__(self, arguments: list[str]=[]) -> None:
         self.executions = 0
         self.arguments = arguments
@@ -39,6 +46,9 @@ class MetricResult():
 
 class Collector():
     base_name = "_"
+
+    # Documentation shown by `sonitor metric <collector>` above the metric list.
+    description: str | None = None
 
     metrics: Dict[str, type[Metric]] = {}
     

@@ -4,6 +4,11 @@ from app.collectors.generic import Collector
 
 class ChannelsCountMetric(Metric):
     name = "channels-count"
+    description = (
+        "Report the number of active channels and active calls currently "
+        "handled by the Asterisk PBX."
+    )
+    shell = 'asterisk -rx "core show channels count"'
 
     def _mount_shell_command(self) -> str:
         return 'asterisk -rx "core show channels count"'
@@ -13,6 +18,11 @@ class ChannelsCountMetric(Metric):
 
 class ChannelsMetric(Metric):
     name = "channels"
+    description = (
+        "List the active PJSIP channels on the Asterisk PBX, showing the "
+        "endpoints and the state of each ongoing call."
+    )
+    shell = 'asterisk -rx "pjsip show channels"'
 
     def _mount_shell_command(self) -> str:
         return 'asterisk -rx "pjsip show channels"'
@@ -22,6 +32,12 @@ class ChannelsMetric(Metric):
 
 class ChannelStatsMetric(Metric):
     name = "channelstats"
+    description = (
+        "Show per-channel RTP statistics for active PJSIP calls, including "
+        "jitter, packet loss and round-trip time. Useful to diagnose audio "
+        "quality issues."
+    )
+    shell = 'asterisk -rx "pjsip show channelstats"'
 
     def _mount_shell_command(self) -> str:
         return 'asterisk -rx "pjsip show channelstats"'
@@ -31,6 +47,12 @@ class ChannelStatsMetric(Metric):
 
 class ContactsMetric(Metric):
     name = "contacts"
+    description = (
+        "List the registered PJSIP contacts (AOR bindings) known to the "
+        "Asterisk PBX. An optional PATTERN filters the output via grep."
+    )
+    shell = 'asterisk -rx "pjsip show contacts" [| grep PATTERN]'
+    arguments_doc = "PATTERN (optional) — grep filter applied to the contact list, e.g. 2020@"
 
     def _mount_shell_command(self, grep_pattern: str = "") -> str:
         command = 'asterisk -rx "pjsip show contacts"'
@@ -45,6 +67,12 @@ class ContactsMetric(Metric):
 
 class SipMetric(Metric):
     name = "sip"
+    description = (
+        "Capture and inspect SIP signalling with sngrep. The arguments are "
+        "forwarded verbatim to sngrep, so any sngrep flag is accepted."
+    )
+    shell = "sngrep ARGS..."
+    arguments_doc = 'ARGS (required) — passed straight to sngrep, e.g. "-N -q -O /tmp/capture.pcap"'
 
     def _mount_shell_command(self, sngrep_arguments: str) -> str:
         return f"sngrep {sngrep_arguments}"
@@ -68,5 +96,6 @@ METRICS: list[type[Metric]] = [
 
 class VoipCollector(Collector):
     base_name = "voip"
+    description = "Asterisk PBX / VoIP metrics: channels, contacts and SIP capture."
 
     metrics: Dict[str, type[Metric]] = Collector._prefix_metrics(base_name, METRICS)
