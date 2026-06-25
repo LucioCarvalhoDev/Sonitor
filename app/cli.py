@@ -296,8 +296,8 @@ def run_remote_forget(name: str, keep_key: bool) -> int:
     return 0
 
 
-def run_remote_teardown(target: str, bootstrap_user: str, no_privileges: bool) -> int:
-    entry = provision.run_teardown(target, bootstrap_user=bootstrap_user, no_privileges=no_privileges)
+def run_remote_teardown(target: str, bootstrap_user: str) -> int:
+    entry = provision.run_teardown(target, bootstrap_user=bootstrap_user)
     if entry:
         dest = entry.target.host + (f":{entry.target.port}" if entry.target.port else "")
         print(f"tore down the '{provision.REMOTE_USER}' user on {dest}")
@@ -310,8 +310,8 @@ def run_remote_teardown(target: str, bootstrap_user: str, no_privileges: bool) -
     return 0
 
 
-def run_remote_purge(name: str, bootstrap_user: str, no_privileges: bool, keep_key: bool) -> int:
-    provision.run_purge(name, bootstrap_user=bootstrap_user, no_privileges=no_privileges, keep_key=keep_key)
+def run_remote_purge(name: str, bootstrap_user: str, keep_key: bool) -> int:
+    provision.run_purge(name, bootstrap_user=bootstrap_user, keep_key=keep_key)
     tail = "" if keep_key else " and deleted its key"
     print(f"purged target '{name}': removed the '{provision.REMOTE_USER}' user on its host{tail}")
     return 0
@@ -558,7 +558,7 @@ def _add_remote_parser(subparsers: argparse._SubParsersAction) -> None:
     setup.add_argument(
         "--no-privileges",
         action="store_true",
-        help="Skip wiring metric privileges (asterisk group, sngrep setcap) on the target.",
+        help="Skip wiring metric privileges (asterisk group) on the target.",
     )
     setup.add_argument(
         "--force",
@@ -604,11 +604,6 @@ def _add_remote_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Privileged user to connect as when TARGET is a registered name "
         "(default: root; ssh asks for the password; ignored for an explicit destination).",
     )
-    teardown.add_argument(
-        "--no-privileges",
-        action="store_true",
-        help="Skip reverting metric privileges (leave the sngrep setcap in place).",
-    )
 
     purge = actions.add_parser(
         "purge",
@@ -620,11 +615,6 @@ def _add_remote_parser(subparsers: argparse._SubParsersAction) -> None:
         default="root",
         metavar="USER",
         help="Privileged user to connect as for the teardown (default: root; ssh asks for the password).",
-    )
-    purge.add_argument(
-        "--no-privileges",
-        action="store_true",
-        help="Skip reverting metric privileges (leave the sngrep setcap in place).",
     )
     purge.add_argument(
         "--keep-key",
@@ -731,9 +721,9 @@ def _dispatch_remote(args: argparse.Namespace) -> int:
     if args.action == "forget":
         return run_remote_forget(args.name, args.keep_key)
     if args.action == "teardown":
-        return run_remote_teardown(args.target, args.bootstrap_user, args.no_privileges)
+        return run_remote_teardown(args.target, args.bootstrap_user)
     if args.action == "purge":
-        return run_remote_purge(args.name, args.bootstrap_user, args.no_privileges, args.keep_key)
+        return run_remote_purge(args.name, args.bootstrap_user, args.keep_key)
     raise ValueError(f"unknown remote action: {args.action}")
 
 

@@ -22,16 +22,6 @@ def test_voip_contacts_optional_grep_filter():
     assert _command("voip-contacts", ["sip", "2020"]) == 'asterisk -rx "pjsip show contacts" | grep sip 2020'
 
 
-def test_voip_sip_joins_sngrep_arguments():
-    assert _command("voip-sip", ["-N -q -O /tmp/c.pcap"]) == "sngrep -N -q -O /tmp/c.pcap"
-    assert _command("voip-sip", ["-N", "-q", "dst", "host", "10.0.0.1"]) == "sngrep -N -q dst host 10.0.0.1"
-
-
-def test_voip_sip_requires_arguments():
-    with pytest.raises(ValueError):
-        _command("voip-sip")
-
-
 def test_unknown_metric_raises():
     with pytest.raises(ValueError):
         CollectorRepository.resolve("voip-nope")

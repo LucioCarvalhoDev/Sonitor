@@ -3,7 +3,7 @@
 This unprivileged `@@USER@@` user was created by **Sonitor**, an agentless
 monitoring tool. It is reachable over SSH only with the key(s) listed in
 `hosts.toml`, the account is password-locked (`passwd -l`), and it merely runs
-read-only metric commands (uptime, df, asterisk, sngrep) on demand. It runs no
+read-only metric commands (uptime, df, asterisk) on demand. It runs no
 daemon and opens no ports of its own.
 
 Files in this directory:
@@ -17,4 +17,4 @@ To remove @@USER@@ entirely, run as root on this host:
 
   sudo sh /home/@@USER@@/uninstall.sh
 
-This deletes the user and its home directory and reverts the sngrep capability.
+This deletes the user and its home directory, completely.

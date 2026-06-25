@@ -2,7 +2,7 @@
 
 A target lets sonitor run from one modern host and execute a metric's command
 on another machine over SSH, so the monitored servers need no Python at all —
-only a shell and the tools the metric calls (``df``, ``asterisk``, ``sngrep``…).
+only a shell and the tools the metric calls (``df``, ``asterisk``…).
 """
 from __future__ import annotations
 

@@ -182,12 +182,9 @@ def build_remote_script(
     """
     safe_key = public_key.replace("'", "")  # public keys never contain single quotes
     privileges = "" if no_privileges else """
-if getent group asterisk >/dev/null 2>&1; then usermod -aG asterisk "$U" || true; fi
-if command -v sngrep >/dev/null 2>&1 && command -v setcap >/dev/null 2>&1; then
-    setcap cap_net_raw,cap_net_admin+eip "$(command -v sngrep)" || true
-fi"""
+if getent group asterisk >/dev/null 2>&1; then usermod -aG asterisk "$U" || true; fi"""
     manifest = _build_manifest_section(
-        fingerprint, label, version, now, build_teardown_script(no_privileges=no_privileges)
+        fingerprint, label, version, now, build_teardown_script()
     )
     return f"""set -e
 umask 077
@@ -278,23 +275,21 @@ def run_setup(bootstrap_dest: str, name: str, no_privileges: bool = False, force
     return registered
 
 
-def build_teardown_script(no_privileges: bool = False) -> str:
-    """POSIX sh run as root on the target: remove the user and revert privileges.
+def build_teardown_script() -> str:
+    """POSIX sh run as root on the target: remove the sonitor user.
 
     The inverse of :func:`build_remote_script`, rendered from the canonical
     ``manifest/uninstall.sh`` template — the very script also dropped on the host
-    as ``uninstall.sh`` (single source of truth for removal). ``userdel -r`` also
+    as ``uninstall.sh`` (single source of truth for removal). ``userdel -r``
     drops the home directory (and its ``authorized_keys``) and any group
     memberships, so the ``asterisk`` group does not need separate handling.
     """
-    privileges = "" if no_privileges else _load_template("uninstall.privileges.sh")
-    return _render(_load_template("uninstall.sh"), USER=REMOTE_USER, PRIVILEGES=privileges)
+    return _render(_load_template("uninstall.sh"), USER=REMOTE_USER)
 
 
 def run_teardown(
     target: str,
     bootstrap_user: str = "root",
-    no_privileges: bool = False,
 ) -> Target | None:
     """Undo a setup on a target's host — the remote side only.
 
@@ -330,7 +325,7 @@ def run_teardown(
     if entry and entry.target.identity_file:
         _warn_if_other_controllers(entry)
 
-    script = build_teardown_script(no_privileges=no_privileges)
+    script = build_teardown_script()
     blob = base64.b64encode(script.encode()).decode()
     remote_cmd = f"printf %s '{blob}' | base64 -d | sh"
 
@@ -364,7 +359,6 @@ def run_teardown(
 def run_purge(
     name: str,
     bootstrap_user: str = "root",
-    no_privileges: bool = False,
     keep_key: bool = False,
 ) -> Target:
     """Tear down a *registered* target on its host *and* erase it locally.
@@ -375,7 +369,7 @@ def run_purge(
     ``ValueError`` otherwise.
     """
     entry = store.resolve(name)  # name-based: must be registered (raises otherwise)
-    run_teardown(name, bootstrap_user=bootstrap_user, no_privileges=no_privileges)
+    run_teardown(name, bootstrap_user=bootstrap_user)
     store.delete(name)
     if not keep_key and entry.target.identity_file:
         delete_key_files(entry.target.identity_file)

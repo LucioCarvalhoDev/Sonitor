@@ -65,37 +65,15 @@ class ContactsMetric(Metric):
         # e.g. voip-contacts 2020@  ->  asterisk -rx "pjsip show contacts" | grep 2020@
         return self._mount_shell_command(" ".join(self.arguments))
 
-class SipMetric(Metric):
-    name = "sip"
-    description = (
-        "Capture and inspect SIP signalling with sngrep. The arguments are "
-        "forwarded verbatim to sngrep, so any sngrep flag is accepted."
-    )
-    shell = "sngrep ARGS..."
-    arguments_doc = 'ARGS (required) — passed straight to sngrep, e.g. "-N -q -O /tmp/capture.pcap"'
-
-    def _mount_shell_command(self, sngrep_arguments: str) -> str:
-        return f"sngrep {sngrep_arguments}"
-
-    def mount_shell_command(self) -> str:
-        if not self.arguments:
-            raise ValueError(
-                'metric \'voip-sip\' requires sngrep arguments, '
-                'e.g. voip-sip "-N -q -O /tmp/capture.pcap"'
-            )
-        return self._mount_shell_command(" ".join(self.arguments))
-
-
 METRICS: list[type[Metric]] = [
     ChannelsCountMetric,
     ChannelsMetric,
     ChannelStatsMetric,
-    SipMetric,
     ContactsMetric
 ]
 
 class VoipCollector(Collector):
     base_name = "voip"
-    description = "Asterisk PBX / VoIP metrics: channels, contacts and SIP capture."
+    description = "Asterisk PBX / VoIP metrics: channels and contacts."
 
     metrics: Dict[str, type[Metric]] = Collector._prefix_metrics(base_name, METRICS)

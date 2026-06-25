@@ -120,12 +120,10 @@ def test_build_remote_script_contains_key_user_and_guards():
     assert "authorized_keys" in script
     assert "command -v restorecon" in script
     assert "asterisk" in script
-    assert "setcap cap_net_raw" in script
 
 
-def test_build_remote_script_no_privileges_skips_setcap():
+def test_build_remote_script_no_privileges_skips_group():
     script = provision.build_remote_script("ssh-ed25519 AAAAPUB sonitor@demo", no_privileges=True)
-    assert "setcap" not in script
     assert "usermod -aG asterisk" not in script
 
 
@@ -172,7 +170,7 @@ def test_provision_version_is_the_central_app_version():
 # --- canonical manifest templates ----------------------------------------
 
 def test_manifest_templates_exist():
-    for name in ("README.md", "version.toml", "hosts.toml", "controller.toml", "uninstall.sh", "uninstall.privileges.sh"):
+    for name in ("README.md", "version.toml", "hosts.toml", "controller.toml", "uninstall.sh"):
         assert (provision.MANIFEST_DIR / name).is_file(), f"missing manifest template: {name}"
 
 
@@ -182,7 +180,6 @@ def test_uninstall_template_drives_teardown_and_manifest():
     assert body == provision._render(
         provision._load_template("uninstall.sh"),
         USER=provision.REMOTE_USER,
-        PRIVILEGES=provision._load_template("uninstall.privileges.sh"),
     )
     script = provision.build_remote_script("ssh-ed25519 K c@h", fingerprint="SHA256:x", label="c:p")
     assert body in script  # uninstall.sh content embedded verbatim in the setup script
@@ -268,17 +265,10 @@ def test_run_setup_reuses_key_when_target_already_registered(monkeypatch):
 
 # --- teardown script -----------------------------------------------------
 
-def test_build_teardown_script_removes_user_and_reverts_caps():
+def test_build_teardown_script_removes_user():
     script = provision.build_teardown_script()
     assert "userdel -r" in script
     assert "sonitor" in script
-    assert "setcap -r" in script
-
-
-def test_build_teardown_script_no_privileges_skips_setcap():
-    script = provision.build_teardown_script(no_privileges=True)
-    assert "userdel -r" in script
-    assert "setcap" not in script
 
 
 # --- run_teardown (ssh mocked) -------------------------------------------

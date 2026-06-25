@@ -47,11 +47,11 @@ def test_debug_metric_remote_shows_all_layers(capsys):
 
 
 def test_debug_metric_forwards_dashed_arguments(capsys):
-    rc = cli.main(["debug", "metric", "voip-sip", "-N", "-q", "-O", "/tmp/c.pcap"])
+    rc = cli.main(["debug", "metric", "voip-contacts", "-i", "2020@"])
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert "metric command : sngrep -N -q -O /tmp/c.pcap" in out
+    assert 'metric command : asterisk -rx "pjsip show contacts" | grep -i 2020@' in out
 
 
 def test_debug_metric_unknown_metric_errors(capsys):

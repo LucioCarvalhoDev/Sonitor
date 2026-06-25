@@ -6,7 +6,6 @@ from app.collectors.voip import (
     ChannelsCountMetric,
     ChannelsMetric,
     ChannelStatsMetric,
-    SipMetric,
 )
 import re
 
@@ -30,7 +29,6 @@ __all__ = [
     "ChannelsCountMetric",
     "ChannelsMetric",
     "ChannelStatsMetric",
-    "SipMetric",
 ] + COLLECTORS
 
 

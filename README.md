@@ -57,12 +57,8 @@ single snapshot.
 | `voip-channels-count` | `asterisk -rx "core show channels count"` | — |
 | `voip-channels`  | `asterisk -rx "pjsip show channels"`      | — |
 | `voip-channelstatus` | `asterisk -rx "pjsip show channelstats"` | — |
-| `voip-sip`       | `sngrep <args>`    | `"<sngrep args>"` |
 
-> **VoIP metrics** assume an Asterisk PBX with the **PJSIP** channel driver and,
-> for `voip-sip`, the `sngrep` tool. The `voip-sip` argument string is passed
-> through to `sngrep` verbatim — quote it as a single argument and use a
-> non-interactive form, e.g. `voip-sip "-N -q -O /tmp/capture.pcap"`.
+> **VoIP metrics** assume an Asterisk PBX with the **PJSIP** channel driver.
 
 ## Examples
 
@@ -85,7 +81,7 @@ python3 sonitor.py print --metric sys-storage --metric net-dns google.com --outp
 By default every metric runs on the local host. With `--target` the metric
 commands run on a remote host over **SSH** instead, so sonitor can run from one
 modern machine while the monitored servers need **no Python at all** — only a
-shell and the tools each metric calls (`df`, `asterisk`, `sngrep`, …). This is
+shell and the tools each metric calls (`df`, `asterisk`, …). This is
 the recommended way to monitor boxes stuck on old/legacy Python.
 
 ```
@@ -111,7 +107,7 @@ python3 sonitor.py print --target root@pbx.example.com \
 # Persist a routine that collects from the PBX every 5 minutes
 python3 sonitor.py routine create 5m --name pbx --target root@10.0.0.5:2222 \
   --ssh-option StrictHostKeyChecking=accept-new \
-  --metric voip-channels-count --metric voip-sip "-N -q -O /tmp/cap.pcap"
+  --metric voip-channels-count --metric voip-channelstats
 ```
 
 ### Inspecting a command (`debug metric`)
@@ -128,7 +124,7 @@ python3 sonitor.py debug metric --target pbx01 voip-contacts 2020@
 ```
 
 Put `--target` before the metric name; everything after the metric name is
-forwarded to it as arguments (so dashed args like `voip-sip -N -q` work as-is).
+forwarded to it as arguments (so dashed args like `voip-contacts -i 2020` work as-is).
 Without `--target` only the bare metric command is shown (it would run locally).
 
 ### Onboarding a target (`remote setup`)
@@ -138,7 +134,7 @@ dedicated keypair **on this host** (the private key never leaves it), connects t
 the target once with the privileged credentials you give it (SSH prompts for the
 password on your terminal), and on the target it creates a locked-down `sonitor`
 user, installs the **public** key, and wires up metric privileges (adds it to the
-`asterisk` group and gives `sngrep` `cap_net_raw`). The target is then registered
+`asterisk` group). The target is then registered
 under a name you can pass to `--target`.
 
 ```
@@ -213,7 +209,7 @@ This addresses three otherwise-invisible situations:
   `remote teardown` runs:
 
   ```bash
-  sudo sh /home/sonitor/uninstall.sh   # removes the user + home, reverts sngrep cap
+  sudo sh /home/sonitor/uninstall.sh   # removes the user + home
   ```
 
 Re-running `setup` (e.g. `--force`) rewrites `version.toml`, `README.md` and
@@ -364,7 +360,7 @@ app/
     generic.py             # Metric, MetricResult, Collector, Snapshot
     net.py                 # PingMetric, DnsMetric, PublicIPMetric, NetCollector
     sys.py                 # UptimeMetric, StorageMetric, TopMetric, SystemCollector
-    voip.py                # Channels/ChannelStatus/Sip metrics, VoipCollector
+    voip.py                # Channels/ChannelStatus metrics, VoipCollector
   execution/
     __init__.py            # get_executor(target) factory (local vs remote)
     shell_executor.py      # ShellExecutor + RemoteShellExecutor (SSH)
