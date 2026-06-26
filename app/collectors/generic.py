@@ -1,5 +1,16 @@
+import argparse
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
+
+
+class _MetricArgParser(argparse.ArgumentParser):
+    """An argparse parser for a metric's flags that raises ``ValueError`` on
+    error (instead of printing usage and calling ``sys.exit``), so failures
+    flow through ``cli.main``'s existing ``ValueError`` handling."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise ValueError(f"metric '{self.prog}': {message}")
+
 
 class Metric():
     name: str = "_"
@@ -10,14 +21,21 @@ class Metric():
     description: str | None = None
     shell: str | None = None
     arguments_doc: str | None = None
+    flags_doc: str | None = None
 
     def __init__(self, arguments: list[str]=[]) -> None:
         self.executions = 0
         self.arguments = arguments
-    
+
+    @classmethod
+    def arg_parser(cls) -> argparse.ArgumentParser | None:
+        """Return a parser for this metric's flags, or ``None`` if it takes
+        none. Metrics with flags override this (see ``sys-top``)."""
+        return None
+
     def to_str(self) -> str:
         return f"[Metric {self.name}: {self.arguments}]"
-    
+
     def mount_shell_command(self) -> str:
         return self._mount_shell_command(self.arguments)
 

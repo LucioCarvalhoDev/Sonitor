@@ -50,12 +50,99 @@ class PublicIPMetric(Metric):
     def mount_shell_command(self) -> str:
         return self._mount_shell_command()
 
+class IPMetric(Metric):
+    name = "ip"
+    description = (
+        "Show the host's network interfaces and their IP addresses in a brief, "
+        "columnar form (one line per interface)."
+    )
+    shell = "ip -brief address"
 
-METRICS: list[type[Metric]] = [DnsMetric, PingMetric, PublicIPMetric]
+    def _mount_shell_command(self) -> str:
+        return f"ip -brief address"
+
+    def mount_shell_command(self) -> str:
+        return self._mount_shell_command()
+
+class ConnectionsMetric(Metric):
+    name = "connections"
+    description = (
+        "Summarize socket statistics and list the active TCP and UDP "
+        "connections (with owning processes). Useful to see what the host is "
+        "talking to."
+    )
+    shell = "ss -s; ss -tunp"
+
+    def _mount_shell_command(self) -> str:
+        return f"ss -s; ss -tunp"
+
+    def mount_shell_command(self) -> str:
+        return self._mount_shell_command()
+
+class ListeningMetric(Metric):
+    name = "listening"
+    description = (
+        "List the TCP ports the host is listening on, with the owning "
+        "processes. Useful to audit exposed services."
+    )
+    shell = "ss -tlnp"
+
+    def _mount_shell_command(self) -> str:
+        return f"ss -tlnp"
+
+    def mount_shell_command(self) -> str:
+        return self._mount_shell_command()
+
+class RouteMetric(Metric):
+    name = "route"
+    description = (
+        "Print the host's IP routing table, including the default gateway. "
+        "Useful to confirm traffic is routed as expected."
+    )
+    shell = "ip route"
+
+    def _mount_shell_command(self) -> str:
+        return f"ip route"
+
+    def mount_shell_command(self) -> str:
+        return self._mount_shell_command()
+
+class HttpMetric(Metric):
+    name = "http"
+    description = (
+        "Probe URL with curl and report the HTTP status code and connection "
+        "and total timings. Useful to check an endpoint is up and responsive."
+    )
+    shell = 'curl -s -o /dev/null -w "http_code=... time_total=...s" URL'
+    arguments_doc = "URL (required) — endpoint to probe, e.g. https://example.com"
+
+    def _mount_shell_command(self, url: str) -> str:
+        return (
+            'curl -s -o /dev/null -w '
+            '"http_code=%{http_code} time_connect=%{time_connect}s time_total=%{time_total}s\\n" '
+            f"{url}"
+        )
+
+    def mount_shell_command(self) -> str:
+        if not self.arguments:
+            raise ValueError("metric 'net-http' requires a URL argument, e.g. net-http https://example.com")
+        return self._mount_shell_command(self.arguments[0])
+
+
+METRICS: list[type[Metric]] = [
+    DnsMetric,
+    PingMetric,
+    PublicIPMetric,
+    IPMetric,
+    ConnectionsMetric,
+    ListeningMetric,
+    RouteMetric,
+    HttpMetric,
+]
 
 class NetCollector(Collector):
     base_name = "net"
-    description = "Network reachability and connectivity metrics."
+    description = "Network reachability, connectivity and socket metrics."
 
     metrics: Dict[str, type[Metric]] = Collector._prefix_metrics(base_name, METRICS)
 

@@ -21,6 +21,7 @@ __all__ = [
     "MetricResult",
     "Snapshot",
     "CollectorRepository",
+    "IPMetric"
     "PingMetric",
     "DnsMetric",
     "PublicIPMetric",
@@ -122,4 +123,6 @@ class CollectorRepository():
             f"Shell: {shell}",
             f"Arguments: {arguments}",
         ]
+        if metric_cls.flags_doc:
+            lines.append(f"Flags: {metric_cls.flags_doc}")
         return "\n".join(lines)

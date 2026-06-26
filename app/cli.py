@@ -48,6 +48,77 @@ def build_metrics(metric_specs: List[List[str]]) -> List[Metric]:
     return metrics
 
 
+def _metric_flag_arity(name: str) -> Dict[str, int]:
+    """Map each of a metric's flag strings to how many values it consumes.
+
+    Read from the metric's ``arg_parser()`` so the splitter knows which dashed
+    tokens belong to the metric (and how many values to swallow). Unknown
+    metrics (resolution fails) have no known flags, so the splitter stops at
+    the first dashed token and ``build_metrics`` later raises the nice error.
+    """
+    try:
+        metric_cls = CollectorRepository.resolve(name)
+    except ValueError:
+        return {}
+    parser = metric_cls.arg_parser()
+    if parser is None:
+        return {}
+    arity: Dict[str, int] = {}
+    for action in parser._actions:
+        takes_value = 0 if action.nargs == 0 else 1
+        for option in action.option_strings:
+            arity[option] = takes_value
+    return arity
+
+
+def _extract_metric_groups(argv: List[str]) -> tuple[List[str], List[List[str]]]:
+    """Pull each ``--metric NAME [args/flags...]`` group out of ``argv``.
+
+    Runs before argparse so a metric's own dashed flags (e.g. ``sys-top
+    --head 5``) are captured instead of being rejected as unknown options. A
+    group runs from ``--metric NAME`` until the next ``--metric`` or the next
+    dashed token that is *not* one of that metric's flags (a sibling option,
+    which stops the group). Returns ``(residual_argv, groups)`` where
+    ``residual_argv`` is everything that was not part of a metric group.
+    """
+    residual: List[str] = []
+    groups: List[List[str]] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token != "--metric":
+            residual.append(token)
+            index += 1
+            continue
+
+        index += 1  # consume '--metric'
+        if index >= len(argv) or argv[index] == "--metric":
+            raise ValueError("--metric requires a metric name")
+        name = argv[index]
+        index += 1
+        group = [name]
+        flag_arity = _metric_flag_arity(name)
+        while index < len(argv):
+            candidate = argv[index]
+            if candidate == "--metric":
+                break
+            if candidate.startswith("-"):
+                flag = candidate.split("=", 1)[0]
+                if flag not in flag_arity:
+                    break  # sibling option -> the metric group ends here
+                group.append(candidate)
+                index += 1
+                # a separate value (not the --flag=value form) is part of the group
+                if "=" not in candidate and flag_arity[flag] and index < len(argv) and argv[index] != "--metric":
+                    group.append(argv[index])
+                    index += 1
+                continue
+            group.append(candidate)
+            index += 1
+        groups.append(group)
+    return residual, groups
+
+
 def run_print(
     metric_specs: List[List[str]],
     output: str | None,
@@ -455,6 +526,72 @@ def _add_ssh_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_all_argument(parser: argparse.ArgumentParser, *, noun: str) -> None:
+    """Add the reusable `--all` modifier that targets every stored ``noun``."""
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_targets",
+        help=f"Apply to every stored {noun} (mutually exclusive with the positional target).",
+    )
+
+
+def _add_yes_argument(parser: argparse.ArgumentParser) -> None:
+    """Add `--yes`, which skips the confirmation prompt for bulk destructive operations."""
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip the confirmation prompt for bulk destructive operations (--all).",
+    )
+
+
+def _select_identifiers(
+    target: str | None,
+    all_targets: bool,
+    list_fn,
+    id_attr: str,
+) -> List[str]:
+    """Resolve which identifiers a command acts on: one explicit target, or every stored one."""
+    if all_targets:
+        if target:
+            raise ValueError("--all cannot be combined with an explicit target.")
+        return [getattr(item, id_attr) for item in list_fn()]
+    if not target:
+        raise ValueError("a target is required (or pass --all to apply to every target).")
+    return [target]
+
+
+def _confirm_bulk(verb: str, noun: str, count: int) -> bool:
+    answer = input(f"{verb} all {count} {noun}(s)? type 'yes' to proceed: ")
+    return answer.strip().lower() == "yes"
+
+
+def _run_over_targets(
+    args: argparse.Namespace,
+    *,
+    list_fn,
+    id_attr: str,
+    run_one,
+    verb: str,
+    noun: str,
+    destructive: bool,
+) -> int:
+    """Run ``run_one`` for each selected identifier, confirming destructive `--all` first."""
+    identifiers = _select_identifiers(args.target, args.all_targets, list_fn, id_attr)
+    if not identifiers:  # --all but nothing stored
+        print(f"no {noun}s")
+        return 0
+    if args.all_targets and destructive and not getattr(args, "yes", False):
+        if not _confirm_bulk(verb, noun, len(identifiers)):
+            print("aborted")
+            return 1
+    exit_code = 0
+    for identifier in identifiers:
+        exit_code |= run_one(identifier)
+    return exit_code
+
+
 def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
     routine_parser = subparsers.add_parser(
         "routine", help="Create, run and schedule recurring metric routines."
@@ -491,10 +628,10 @@ def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
         "--metric",
         action="append",
         nargs="+",
-        required=True,
+        required=False,  # extracted from argv before argparse (see _extract_metric_groups)
         metavar=("NAME", "ARG"),
         dest="metrics",
-        help="Metric name followed by its arguments. Repeatable.",
+        help="Metric name followed by its arguments and flags. Repeatable.",
     )
     _add_ssh_arguments(create)
 
@@ -505,38 +642,45 @@ def _add_routine_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Scheduler to query for enabled state (defaults to DEFAULT_SCHEDULER).",
     )
 
-    for verb, helptext in (
-        ("show", "Print a routine's .sonitor file and its log."),
-        ("run", "Run a routine once now."),
-        ("reset", "Clear a routine's log."),
+    for verb, helptext, destructive in (
+        ("show", "Print a routine's .sonitor file and its log.", False),
+        ("run", "Run a routine once now.", False),
+        ("reset", "Clear a routine's log.", True),
     ):
         action = actions.add_parser(verb, help=helptext)
-        action.add_argument("target", metavar="UUID|NAME", help="Routine uuid or name.")
+        action.add_argument("target", nargs="?", metavar="UUID|NAME", help="Routine uuid or name.")
+        _add_all_argument(action, noun="routine")
+        if destructive:
+            _add_yes_argument(action)
 
     reschedule = actions.add_parser(
         "reschedule", help="Change a routine's period (re-applies the schedule if enabled)."
     )
-    reschedule.add_argument("target", metavar="UUID|NAME", help="Routine uuid or name.")
+    reschedule.add_argument("target", nargs="?", metavar="UUID|NAME", help="Routine uuid or name.")
     reschedule.add_argument("period", help="New recurrence period, e.g. 30s, 5m, 12h, 1d.")
     reschedule.add_argument(
         "--scheduler",
         metavar="NAME",
         help="Scheduler to use (defaults to DEFAULT_SCHEDULER).",
     )
+    _add_all_argument(reschedule, noun="routine")
 
-    for verb, helptext in (
-        ("enable", "Schedule a routine for recurring execution."),
-        ("disable", "Unschedule a routine."),
-        ("delete", "Unschedule and remove a routine's .sonitor file (keeps its log)."),
-        ("purge", "Unschedule and remove a routine's .sonitor file and its log."),
+    for verb, helptext, destructive in (
+        ("enable", "Schedule a routine for recurring execution.", False),
+        ("disable", "Unschedule a routine.", False),
+        ("delete", "Unschedule and remove a routine's .sonitor file (keeps its log).", True),
+        ("purge", "Unschedule and remove a routine's .sonitor file and its log.", True),
     ):
         action = actions.add_parser(verb, help=helptext)
-        action.add_argument("target", metavar="UUID|NAME", help="Routine uuid or name.")
+        action.add_argument("target", nargs="?", metavar="UUID|NAME", help="Routine uuid or name.")
         action.add_argument(
             "--scheduler",
             metavar="NAME",
             help="Scheduler to use (defaults to DEFAULT_SCHEDULER).",
         )
+        _add_all_argument(action, noun="routine")
+        if destructive:
+            _add_yes_argument(action)
 
 
 def _add_remote_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -572,7 +716,8 @@ def _add_remote_parser(subparsers: argparse._SubParsersAction) -> None:
         "check",
         help="Verify a registered target still connects over SSH (as agentless collection would).",
     )
-    check.add_argument("name", metavar="NAME", help="Registered target name.")
+    check.add_argument("target", nargs="?", metavar="NAME", help="Registered target name.")
+    _add_all_argument(check, noun="target")
 
     rename = actions.add_parser(
         "rename", help="Rename a registered target (and its local SSH key files)."
@@ -581,12 +726,14 @@ def _add_remote_parser(subparsers: argparse._SubParsersAction) -> None:
     rename.add_argument("new", metavar="NEW", help="New target name.")
 
     forget = actions.add_parser("forget", help="Forget a registered target locally (and delete its key).")
-    forget.add_argument("name", metavar="NAME", help="Registered target name.")
+    forget.add_argument("target", nargs="?", metavar="NAME", help="Registered target name.")
     forget.add_argument(
         "--keep-key",
         action="store_true",
         help="Keep the local SSH key files instead of deleting them.",
     )
+    _add_all_argument(forget, noun="target")
+    _add_yes_argument(forget)
 
     teardown = actions.add_parser(
         "teardown",
@@ -594,6 +741,7 @@ def _add_remote_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     teardown.add_argument(
         "target",
+        nargs="?",
         metavar="NAME | [USER@]HOST[:PORT]",
         help="Registered target name, or an explicit privileged destination to tear down.",
     )
@@ -604,12 +752,14 @@ def _add_remote_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Privileged user to connect as when TARGET is a registered name "
         "(default: root; ssh asks for the password; ignored for an explicit destination).",
     )
+    _add_all_argument(teardown, noun="target")
+    _add_yes_argument(teardown)
 
     purge = actions.add_parser(
         "purge",
         help="Tear down a registered target on its host (by name) and forget it locally.",
     )
-    purge.add_argument("name", metavar="NAME", help="Registered target name.")
+    purge.add_argument("target", nargs="?", metavar="NAME", help="Registered target name.")
     purge.add_argument(
         "--bootstrap-user",
         default="root",
@@ -621,6 +771,8 @@ def _add_remote_parser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Keep the local SSH key files instead of deleting them.",
     )
+    _add_all_argument(purge, noun="target")
+    _add_yes_argument(purge)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -643,10 +795,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--metric",
         action="append",
         nargs="+",
-        required=True,
+        required=False,  # extracted from argv before argparse (see _extract_metric_groups)
         metavar=("NAME", "ARG"),
         dest="metrics",
-        help="Metric name followed by its arguments. Repeatable.",
+        help="Metric name followed by its arguments and flags. Repeatable.",
     )
     print_parser.add_argument(
         "--output",
@@ -715,15 +867,27 @@ def _dispatch_remote(args: argparse.Namespace) -> int:
     if args.action == "list":
         return run_remote_list()
     if args.action == "check":
-        return run_remote_check(args.name)
+        return _run_over_targets(
+            args, list_fn=remote_store.list_targets, id_attr="name",
+            run_one=lambda name: run_remote_check(name),
+            verb="check", noun="target", destructive=False)
     if args.action == "rename":
         return run_remote_rename(args.current, args.new)
     if args.action == "forget":
-        return run_remote_forget(args.name, args.keep_key)
+        return _run_over_targets(
+            args, list_fn=remote_store.list_targets, id_attr="name",
+            run_one=lambda name: run_remote_forget(name, args.keep_key),
+            verb="forget", noun="target", destructive=True)
     if args.action == "teardown":
-        return run_remote_teardown(args.target, args.bootstrap_user)
+        return _run_over_targets(
+            args, list_fn=remote_store.list_targets, id_attr="name",
+            run_one=lambda name: run_remote_teardown(name, args.bootstrap_user),
+            verb="teardown", noun="target", destructive=True)
     if args.action == "purge":
-        return run_remote_purge(args.name, args.bootstrap_user, args.keep_key)
+        return _run_over_targets(
+            args, list_fn=remote_store.list_targets, id_attr="name",
+            run_one=lambda name: run_remote_purge(name, args.bootstrap_user, args.keep_key),
+            verb="purge", noun="target", destructive=True)
     raise ValueError(f"unknown remote action: {args.action}")
 
 
@@ -743,27 +907,71 @@ def _dispatch_routine(args: argparse.Namespace) -> int:
     if args.action == "list":
         return run_routine_list(args.scheduler)
     if args.action == "show":
-        return run_routine_show(args.target)
+        return _run_over_targets(
+            args, list_fn=store.list_routines, id_attr="uuid",
+            run_one=lambda target: run_routine_show(target),
+            verb="show", noun="routine", destructive=False)
     if args.action == "reschedule":
-        return run_routine_reschedule(args.target, args.period, args.scheduler)
+        return _run_over_targets(
+            args, list_fn=store.list_routines, id_attr="uuid",
+            run_one=lambda target: run_routine_reschedule(target, args.period, args.scheduler),
+            verb="reschedule", noun="routine", destructive=False)
     if args.action == "run":
-        return run_routine_run(args.target)
+        return _run_over_targets(
+            args, list_fn=store.list_routines, id_attr="uuid",
+            run_one=lambda target: run_routine_run(target),
+            verb="run", noun="routine", destructive=False)
     if args.action == "reset":
-        return run_routine_reset(args.target)
+        return _run_over_targets(
+            args, list_fn=store.list_routines, id_attr="uuid",
+            run_one=lambda target: run_routine_reset(target),
+            verb="reset", noun="routine", destructive=True)
     if args.action == "enable":
-        return run_routine_enable(args.target, args.scheduler)
+        return _run_over_targets(
+            args, list_fn=store.list_routines, id_attr="uuid",
+            run_one=lambda target: run_routine_enable(target, args.scheduler),
+            verb="enable", noun="routine", destructive=False)
     if args.action == "disable":
-        return run_routine_disable(args.target, args.scheduler)
+        return _run_over_targets(
+            args, list_fn=store.list_routines, id_attr="uuid",
+            run_one=lambda target: run_routine_disable(target, args.scheduler),
+            verb="disable", noun="routine", destructive=False)
     if args.action == "delete":
-        return run_routine_delete(args.target, args.scheduler)
+        return _run_over_targets(
+            args, list_fn=store.list_routines, id_attr="uuid",
+            run_one=lambda target: run_routine_delete(target, args.scheduler),
+            verb="delete", noun="routine", destructive=True)
     if args.action == "purge":
-        return run_routine_purge(args.target, args.scheduler)
+        return _run_over_targets(
+            args, list_fn=store.list_routines, id_attr="uuid",
+            run_one=lambda target: run_routine_purge(target, args.scheduler),
+            verb="purge", noun="routine", destructive=True)
     raise ValueError(f"unknown routine action: {args.action}")
 
 
 def main(argv: List[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+
+    try:
+        # Pull metric groups (name + its own args/flags) out of argv before
+        # argparse so per-metric dashed flags are not rejected as unknown options.
+        residual, metric_groups = _extract_metric_groups(raw_argv)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+    args = parser.parse_args(residual)
+
+    # The --metric option is kept in argparse only for --help; the real groups
+    # come from the pre-pass. Attach them to the commands that consume metrics.
+    uses_metrics = args.command == "print" or (
+        args.command == "routine" and getattr(args, "action", None) == "create"
+    )
+    if uses_metrics:
+        if not metric_groups:
+            parser.error("the following arguments are required: --metric")
+        args.metrics = metric_groups
 
     try:
         if args.command == "print":
